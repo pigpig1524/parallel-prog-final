@@ -51,7 +51,10 @@ void Dataset::loadTrain() {
     }
 }
 
-
+/*
+* Bring in the test data from the binary file
+*
+*/
 void Dataset::loadTest() {
     std::string testFilePath = std::string(this->dataPath) + "test_batch.bin";
     FILE * file = fopen(testFilePath.c_str(), "rb");
@@ -93,20 +96,68 @@ void Dataset::shuffle() {
 }
 
 
+/** 
+ * @brief Generate a batch of training data
+ * 
+ * Note: This function assumes that shuffle() has been called beforehand
+ * @param batchSize Size of the batch
+ * @param batchIndex Index of the batch
+ * @return Batch containing images and labels
+*/
 Batch Dataset::getTrainBatch(unsigned int batchSize, unsigned int batchIndex) {
+    // Initialize batch
     Batch batch;
     batch.images = new float[batchSize * 3072];
     batch.labels = new unsigned char[batchSize];
 
+    // If shuffledIndices is not initialized, initialize it
+    // Default to sequential order (no shuffling)
     if (this->shuffledIndices.size() != this->nTrain) {
-        this->shuffle();
+        this->shuffledIndices.resize(this->nTrain);
+        for (unsigned int i = 0; i < this->nTrain; i++) {
+            this->shuffledIndices[i] = i;
+        }
     }
 
+    // Fill batch with data
     for (unsigned int i = 0; i < batchSize; i++) {
+        // Get the actual index from shuffled indices
         unsigned int index = shuffledIndices[batchIndex * batchSize + i];
+        // Copy label
         batch.labels[i] = this->trainSplit.labels[index];
+        // Copy image
         std::memcpy(&batch.images[i * 3072], this->trainSplit.images[index], 3072 * sizeof(float));
     }
 
     return batch;
+}
+
+
+Batch Dataset::getTestBatch(unsigned int batchSize, unsigned int batchIndex) {
+    Batch batch;
+    batch.images = new float[batchSize * 3072];
+    batch.labels = new unsigned char[batchSize];
+
+    for (unsigned int i = 0; i < batchSize; i++) {
+        unsigned int index = batchIndex * batchSize + i;
+        batch.labels[i] = this->testSplit.labels[index];
+        std::memcpy(&batch.images[i * 3072], this->testSplit.images[index], 3072 * sizeof(float));
+    }
+    return batch;
+}
+
+
+/**
+ * @brief Generate a batch of data (train or test)
+ * @param batchSize Size of the batch
+ * @param batchIndex Index of the batch
+ * @param isTrain Boolean indicating whether to get training data or test data (default: true)
+ * @return Batch containing images and labels
+ */
+Batch Dataset::getBatch(unsigned int batchSize, unsigned int batchIndex, bool isTrain) {
+    if (isTrain) {
+        return this->getTrainBatch(batchSize, batchIndex);
+    } else {
+        return this->getTestBatch(batchSize, batchIndex);
+    }
 }

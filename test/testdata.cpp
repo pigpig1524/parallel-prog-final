@@ -1,5 +1,4 @@
 #include <iostream>
-#include "../src/dataset.h"
 #include "../src/dataset.cpp"
 
 using namespace std;
@@ -11,7 +10,7 @@ int main() {
 
     dataset.shuffle();
     printf("Done shuffling:\n");
-    Batch batch = dataset.getTrainBatch(5, 0);
+    Batch batch = dataset.getBatch(5, 0);
     for (int i = 0; i < 5; i++) {
         cout << "Label " << i << ": " << (int)(batch.labels[i]) << endl;
         cout << "First 10 pixels: ";

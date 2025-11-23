@@ -23,6 +23,9 @@ class Dataset {
         Split trainSplit;
         Split testSplit;
 
+        Batch getTrainBatch(unsigned int batchSize, unsigned int batchIndex);
+        Batch getTestBatch(unsigned int batchSize, unsigned int batchIndex);
+
         void loadTrain();
         void loadTest();
 
@@ -36,7 +39,7 @@ class Dataset {
         Split getTrainSplit() const { return this->trainSplit; }
         Split getTestSplit() const { return this->testSplit; }
 
-        Batch getTrainBatch(unsigned int batchSize, unsigned int batchIndex);
+        Batch getBatch(unsigned int batchSize, unsigned int batchIndex, bool isTrain = true);
 };
 
 
