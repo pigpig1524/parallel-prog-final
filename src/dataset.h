@@ -40,6 +40,8 @@ class Dataset {
         Split getTestSplit() const { return this->testSplit; }
 
         Batch getBatch(unsigned int batchSize, unsigned int batchIndex, bool isTrain = true);
+
+        Batch* getBatches(unsigned int batchSize, bool isTrain = true);
 };
 
 

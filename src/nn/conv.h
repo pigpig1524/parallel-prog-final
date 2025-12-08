@@ -34,6 +34,11 @@ class Conv2D {
          */
         ~Conv2D();
 
+        int getFilterNum() const { return this->filterNum; }
+        int getFilterWidth() const { return this->filterWidth; }
+        int getInputChannels() const { return this->inputChannels; }
+        int getStride() const { return this->stride; }
+        int getPadding() const { return this->padding; }
 
         // This section for forward and backward propagation
 
@@ -54,4 +59,8 @@ class Conv2D {
          * 
          */
         void convolve(float * inputBatch, float * outputBatch, int inputWidth, int inputHeight, int batchSize);
+
+        float* convolve(float * inputBatch, int inputWidth, int inputHeight, int batchSize);
+
+        void backpropagate(float * inputBatch, float * outputGradients, float * inputGradients, int inputWidth, int inputHeight, int batchSize);
 };

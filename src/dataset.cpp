@@ -161,3 +161,16 @@ Batch Dataset::getBatch(unsigned int batchSize, unsigned int batchIndex, bool is
         return this->getTestBatch(batchSize, batchIndex);
     }
 }
+
+Batch* Dataset::getBatches(unsigned int batchSize, bool isTrain) {
+    unsigned int nSamples = isTrain ? this->nTrain : this->nTest;
+    unsigned int nBatches = nSamples / batchSize;
+
+    Batch* batches = new Batch[nBatches];
+
+    for (unsigned int batchIndex = 0; batchIndex < nBatches; batchIndex++) {
+        batches[batchIndex] = this->getBatch(batchSize, batchIndex, isTrain);
+    }
+
+    return batches;
+}
