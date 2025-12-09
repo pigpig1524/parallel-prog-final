@@ -28,13 +28,13 @@ public:
 
     // Thay đổi: train chỉ tính toán và tích lũy gradient, KHÔNG update ngay
     void train_sample(const std::vector<double>& imageFlat);
-    
+    void save_weights(const std::string& filepath);
+    void load_weights(const std::string& filepath);
     // Hàm mới: Thực hiện update weights sau khi chạy xong 1 batch
     void update_weights(int batchSize);
 
-    std::vector<double> getLatent(const std::vector<double>& imageFlat);
-    std::vector<double> reconstruct(const std::vector<double>& imageFlat);
-    double getLoss() const { return m_loss; }
+    std::vector<double> getOutput(const std::vector<double>& imageFlat);
+    double getLoss() const;
 
 private:
     double m_learningRate;
