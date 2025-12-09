@@ -1,7 +1,11 @@
 # autoencoder
-A Simple Autoencoder Implementation in C++
+Hiện tại là nhánh này đã có gpu-autoencoder. Tuy nhiên khi đem so với cpu-autoencoder thì output chưa giống. Setup so sánh như sau:  
++ 2 model load cùng một tập random weight 
++ setup lại batchSize =3.  
++ Chạy backprop 5 lần rồi dừng vòng lặp  
++ Xuất weight 2 model ra rồi so sánh từng cái.  
 
-An autoencoder is a neural network, basically having the same input and output data values. Thus it tries to learn the representation of the data set. 
-By imposing some criterias on the number of hidden layer dimensions (for example the sparsity constraint), successful representation of the data can be found.
-
-Not: This implementation is not optimized and may have bugs. It is not recomennded to be used in a production environment.
+Mô tả các hàm:
++ `cpu-train.cpp`: train cpu-autoencoder
++ `gpu-train.cpp`: train gpu-autoencoder
++ `compare_bins.cpp`: so sánh 2 tập weight 

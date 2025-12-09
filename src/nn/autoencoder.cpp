@@ -48,10 +48,9 @@ void Autoencoder::initWeights() {
     init_params(w_enc_conv2, b_enc_conv2, d_w_enc_conv2, d_b_enc_conv2, v_w_enc_conv2, v_b_enc_conv2, 128, 256);
     init_params(w_dec_conv3, b_dec_conv3, d_w_dec_conv3, d_b_dec_conv3, v_w_dec_conv3, v_b_dec_conv3, 128, 128);
     init_params(w_dec_conv4, b_dec_conv4, d_w_dec_conv4, d_b_dec_conv4, v_w_dec_conv4, v_b_dec_conv4, 256, 128);
-    init_params(w_dec_conv5, b_dec_conv5, d_w_dec_conv5, d_b_dec_conv5, v_w_dec_conv5, v_b_dec_conv5, 3, 256); // Output 3 channels
+    init_params(w_dec_conv5, b_dec_conv5, d_w_dec_conv5, d_b_dec_conv5, v_w_dec_conv5, v_b_dec_conv5, 3, 256); 
 }
 
-// Thay đổi tên từ train -> train_sample để rõ nghĩa
 void Autoencoder::train_sample(const std::vector<double>& imageFlat) {
     a_input = Tensor(3, 32, 32);
     a_input.data = imageFlat;
@@ -69,8 +68,15 @@ void Autoencoder::train_sample(const std::vector<double>& imageFlat) {
     m_loss /= size;
 
     // Backward sẽ CỘNG DỒN vào biến thành viên d_w_...
+    d_output = Tensor(3, 32, 32);
+    for(int i=0; i<size; i++) {
+        // Match GPU version: dL/dy = (2/N) * (target - predicted)
+        double diff = a_input.data[i] - a_output.data[i]; // target - predicted
+        d_output.data[i] = (2.0 / size) * diff;
+    }
     backwardPass();
 }
+
 
 // Hàm mới: Gọi hàm này sau khi chạy xong 1 batch (ví dụ 32 ảnh)
 void Autoencoder::update_weights(int batchSize) {
@@ -107,10 +113,6 @@ void Autoencoder::apply_update(std::vector<double>& weights, std::vector<double>
         velocity[i] = v;
         weights[i] += v;
         
-        // Weight clipping for additional stability
-        const double weight_clip = 10.0;
-        if (weights[i] > weight_clip) weights[i] = weight_clip;
-        else if (weights[i] < -weight_clip) weights[i] = -weight_clip;
         
         // Quan trọng: Reset gradient về 0 sau khi update để dùng cho batch sau
         d_weights[i] = 0.0;
@@ -172,11 +174,7 @@ void Autoencoder::forwardPass() {
 }
 
 void Autoencoder::backwardPass() {
-    Tensor d_output(3, 32, 32);
-    int size = d_output.data.size();
-    for(int i=0; i<size; i++) {
-        d_output.data[i] = (a_output.data[i] - a_input.data[i]);
-    }
+
 
     // --- BACKWARD DECODER ---
     // Lưu ý: d_w_dec... và d_b_dec... là biến thành viên, nên hàm conv2d_backward sẽ CỘNG DỒN (+=) vào nó

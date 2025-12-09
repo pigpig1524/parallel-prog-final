@@ -41,6 +41,7 @@ private:
     double m_momentum;
     double m_loss;
 
+    Tensor d_output;
     // --- WEIGHTS & BIAS ---
     std::vector<double> w_enc_conv1, b_enc_conv1; 
     std::vector<double> w_enc_conv2, b_enc_conv2;

@@ -1,0 +1,41 @@
+# CMake Build Commands for C++ Project with g++
+
+# 1. Create build directory (if not exists)
+mkdir build
+
+# 2. Navigate to build directory
+cd build
+
+# 3. Configure project with g++ compiler (MinGW on Windows)
+cmake .. -G "MinGW Makefiles" -DCMAKE_CXX_COMPILER=g++
+
+# 4. Build the executable
+cmake --build .
+
+# Alternative one-liner build commands:
+# For Release build:
+cmake --build . --config Release
+
+# For Debug build:
+cmake --build . --config Debug
+
+# 5. Run the executable (after successful build)
+# ./main.exe
+
+# Clean build (remove all build files and rebuild)
+# cd ..
+# rmdir /s build
+# mkdir build
+# cd build
+# cmake .. -G "MinGW Makefiles" -DCMAKE_CXX_COMPILER=g++
+# cmake --build .
+
+# Additional useful commands:
+# - See detailed build output:
+cmake --build . --verbose
+
+# - Build specific target:
+cmake --build . --target main
+
+# - Parallel build (faster):
+cmake --build . --parallel 4

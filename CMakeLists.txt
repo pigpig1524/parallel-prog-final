@@ -17,6 +17,7 @@ file(GLOB SRC_FILES "src/nn/*.cpp")
 
 # Tạo tệp thực thi 'main' từ main.cpp và tất cả các tệp nguồn đã tìm thấy.
 add_executable(main main.cpp ${SRC_FILES})
+add_executable(cpu_train cpu_train.cpp ${SRC_FILES})
 
 message("Project root: ${CMAKE_SOURCE_DIR}")
 message("Current dir: ${CMAKE_CURRENT_SOURCE_DIR}")
