@@ -144,7 +144,7 @@ public:
 int main(int argc, char* argv[]) {
     
     std::string file1 = "weights/cpu_trained_weights.bin";
-    std::string file2 = "weights/test_weights.bin";
+    std::string file2 = "weights/gpu_trained_weights.bin";
     double tolerance = 1e-4f;
 
     

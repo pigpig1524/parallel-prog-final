@@ -165,12 +165,15 @@ int main() {
             
             
             // Train on batch using CPU
+            ae.avg_grad = 0.0;
             for (int j = 0; j < current_batch_size; j++) {
                 const auto& image = train_data[i + j];
                 ae.train_sample(image);
-                epoch_loss += ae.getLoss();
+                epoch_loss += ae.getLoss()/current_batch_size;
             }
+            std::cout << "\n| Avg Grad: " << ae.avg_grad / current_batch_size<<std::endl;
             ae.update_weights(current_batch_size);
+
             processed_batches++;
         }
 

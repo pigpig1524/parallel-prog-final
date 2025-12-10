@@ -97,7 +97,7 @@ __global__ void k_upsample_forward(double* input, double* output, int C, int inH
 
 // --- UPDATED: MSE Loss Kernel with SHARED MEMORY Reduction ---
 // Requirement 2.2: Use shared memory for partial sums
-__global__ void k_mse_loss_backward_input(double* predicted, double* target, double* d_grad, double* loss_val, int size) {
+__global__ void k_mse_loss_backward_input(double* predicted, double* target, double* d_grad, double* avg_grad_sum, double* loss_val, int size) {
     // Shared memory để lưu tổng cục bộ của block
     extern __shared__ double sdata[];
     
@@ -105,11 +105,17 @@ __global__ void k_mse_loss_backward_input(double* predicted, double* target, dou
     int idx = blockIdx.x * blockDim.x + tid;
     
     double sq_diff = 0.0f;
+    double grad_abs = 0.0f;
+    
     // 1. Tính toán diff và gradient cho pixel-wise, đồng thời tính squared error
     if (idx < size) {
         double diff = target[idx] - predicted[idx];
         d_grad[idx] = 2.0f * diff / size; // Gradient: dL/dOutput
         sq_diff = diff * diff / size; // Chia cho tổng số elements để có MSE
+        grad_abs = fabs(d_grad[idx]);
+        
+        // Atomic add to global gradient sum
+        atomicAdd(avg_grad_sum, grad_abs);
     }
     
     // 2. Load vào Shared Memory
@@ -375,24 +381,32 @@ void GPUAutoencoder::train_batch(const std::vector<double>& h_inputBatch, int ba
     CHECK(cudaDeviceSynchronize());
 
     double* d_loss; 
+    double* d_avg_grad_sum;
     CHECK(cudaMalloc(&d_loss, sizeof(double)));
+    CHECK(cudaMalloc(&d_avg_grad_sum, sizeof(double)));
     CHECK(cudaMemset(d_loss, 0, sizeof(double)));
+    CHECK(cudaMemset(d_avg_grad_sum, 0, sizeof(double)));
     
 
     int size = batchSize * 3 * 32 * 32; //total numbers of pixels of both input and output
     int blockSize = 32;
     int gridSize = (size - 1) / blockSize + 1;
+
+    k_mse_loss_backward_input<<<gridSize, blockSize, blockSize * sizeof(double)>>>(d_output, d_input, d_grad_output, d_avg_grad_sum, d_loss, size);
     
-    k_mse_loss_backward_input<<<gridSize, blockSize, blockSize * sizeof(double)>>>(d_output, d_input, d_grad_output, d_loss, size);
+    CHECK(cudaMemcpy(&m_loss, d_loss, sizeof(double), cudaMemcpyDeviceToHost));
     
-    CHECK(cudaMemcpy(&m_loss, d_loss, sizeof(double), cudaMemcpyDeviceToHost)); 
+    double avg_grad_sum;
+    CHECK(cudaMemcpy(&avg_grad_sum, d_avg_grad_sum, sizeof(double), cudaMemcpyDeviceToHost));
+    double avg_grad = avg_grad_sum; // Calculate average
 
     if (train) {
         backwardPass(batchSize);
         updateWeights();
     }
-    
+    printf("\nAverage gradient: %f\n", avg_grad);
     CHECK(cudaFree(d_loss));
+    CHECK(cudaFree(d_avg_grad_sum));
 }
 
 void GPUAutoencoder::forwardPass(int batchSize){

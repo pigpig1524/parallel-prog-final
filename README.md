@@ -9,3 +9,6 @@ Mô tả các hàm:
 + `cpu-train.cpp`: train cpu-autoencoder
 + `gpu-train.cpp`: train gpu-autoencoder
 + `compare_bins.cpp`: so sánh 2 tập weight 
+
+#### Cập nhật 10/12:
+Đã fix bug. 2 bộ weights của cpu và gpu đã giống nhau sau vài lần backprop

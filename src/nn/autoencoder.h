@@ -35,12 +35,13 @@ public:
 
     std::vector<double> getOutput(const std::vector<double>& imageFlat);
     double getLoss() const;
+    double avg_grad;
 
 private:
     double m_learningRate;
     double m_momentum;
     double m_loss;
-
+    
     Tensor d_output;
     // --- WEIGHTS & BIAS ---
     std::vector<double> w_enc_conv1, b_enc_conv1; 

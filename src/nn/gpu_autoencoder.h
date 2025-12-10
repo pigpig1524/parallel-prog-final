@@ -43,6 +43,7 @@ private:
     double m_momentum;
     double m_loss;
     bool train = true;
+    double avg_grad;
     // --- DEVICE POINTERS (WEIGHTS & BIAS) ---
     double *d_w_enc_conv1, *d_b_enc_conv1;
     double *d_w_enc_conv2, *d_b_enc_conv2;
