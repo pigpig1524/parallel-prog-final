@@ -12,3 +12,14 @@ Mô tả các hàm:
 
 #### Cập nhật 10/12:
 Đã fix bug. 2 bộ weights của cpu và gpu đã giống nhau sau vài lần backprop
+
+Thời gian đo hiện tại:
+```
+=== Time summary ===
+Total Kernel Time: 403288.14 ms
+Convolution Forward Time: 39523.29 ms||| Ratio: 9.80%
+Convolution Backward Time: 361250.60 ms||| Ratio: 89.58%
+Convolution Time: 400773.89 ms||| Ratio: 99.38%
+ReLU Time: 898.60 ms||| Ratio: 0.22%
+Pooling Time: 1615.64 ms||| Ratio: 0.40%
+```

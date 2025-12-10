@@ -7,9 +7,7 @@
 #include <string>
 #include <algorithm>
 
-// Hàm đọc một file binary và trả về vector<double>
-// Hàm đọc một file binary CIFAR-10 và trả về vector<double> (chỉ pixel data, bỏ qua label)
-// Hàm đọc một file binary CIFAR-10 và trả về vector<pair<label, image_pixels>>
+
 std::vector<std::pair<int, std::vector<double>>> readBinaryFile(const std::string& filepath) {
     std::ifstream file(filepath, std::ios::binary);
     if (!file.is_open()) {
@@ -18,7 +16,7 @@ std::vector<std::pair<int, std::vector<double>>> readBinaryFile(const std::strin
 
     // CIFAR-10 format: mỗi image = 1 byte label + 3072 bytes pixel data
     const int IMAGE_SIZE = 3072; // 32 * 32 * 3 (RGB)
-    const int RECORD_SIZE = 1 + IMAGE_SIZE; // 1 byte label + 3072 bytes pixels
+    const int RECORD_SIZE = 1 + IMAGE_SIZE; 
     
     // Tính số lượng images trong file
     file.seekg(0, std::ios::end);
@@ -157,7 +155,7 @@ int main() {
             
             ok ++;
             if (ok > 4){
-                ae.save_weights("../weights/cpu_trained_weights.bin");
+                ae.save_weights("../weights/cpu_trained_weights_checking.bin");
                 break;
             }
             std::cout << "\rProcessing batch " << current_batch_num << "/" << total_batches 

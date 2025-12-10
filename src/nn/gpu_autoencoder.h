@@ -1,6 +1,7 @@
 #pragma once
 #include <vector>
 #include <string>
+#include <functional>
 // #include <cuda_runtime.h>
 
 // Macro kiểm tra lỗi CUDA
@@ -18,7 +19,9 @@
 
 
 class GPUAutoencoder {
+    
 public:
+    
     GPUAutoencoder(double learningRate, double momentum);
     ~GPUAutoencoder();
 
@@ -34,16 +37,37 @@ public:
     void load_weights(const std::string& filepath);
 
     double getLoss() const { return m_loss; }
+    
+    // Timing getter functions
+    double getConvForwardTime() const { return conv_forward_time; }
+    double getConvBackwardTime() const { return conv_backward_time; }
+    double getReluForwardTime() const { return relu_forward_time; }
+    double getReluBackwardTime() const { return relu_backward_time; }
+    double getPoolForwardTime() const { return pool_forward_time; }
+    double getPoolBackwardTime() const { return pool_backward_time; }
+    double getTotalKernelTime() const { return total_kernel_time; }
+    void resetTimers() { 
+        conv_forward_time = conv_backward_time = relu_forward_time = relu_backward_time = pool_forward_time = pool_backward_time = total_kernel_time = 0.0; 
+    }
     void get_weights_to_host();
     void getOutput(const std::vector<double>& h_inputBatch, std::vector<double>& h_output, int batchSize);
     void setTrain() { train = true; }
     void setEval() { train = false; }
+    bool isTraining() const { return train; }
+    template<typename Func>
+    void measureKernelTime(Func&& kernelFunc, double& timeVariable, const char* kernelName);
 private:
     double m_learningRate;
     double m_momentum;
     double m_loss;
-    bool train = true;
     double avg_grad;
+    bool allocated = false;
+    bool train = true;
+    // Timing variables for performance measurement
+    double conv_forward_time, conv_backward_time;
+    double relu_forward_time, relu_backward_time;
+    double pool_forward_time, pool_backward_time;
+    double total_kernel_time;
     // --- DEVICE POINTERS (WEIGHTS & BIAS) ---
     double *d_w_enc_conv1, *d_b_enc_conv1;
     double *d_w_enc_conv2, *d_b_enc_conv2;

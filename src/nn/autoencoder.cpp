@@ -72,7 +72,7 @@ void Autoencoder::train_sample(const std::vector<double>& imageFlat) {
     for(int i=0; i<size; i++) {
         // Match GPU version: dL/dy = (2/N) * (target - predicted)
         double diff = a_input.data[i] - a_output.data[i]; // target - predicted
-        d_output.data[i] = (2.0f / size) * diff;
+        d_output.data[i] = -(2.0f / size) * diff;
         avg_grad += fabs(d_output.data[i]);
     }
     

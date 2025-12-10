@@ -61,9 +61,9 @@ std::vector<std::pair<int, std::vector<double>>> readBinaryFile(const std::strin
 }
 
 // Hàm đọc tất cả file .bin trong folder và load vào train_data
-std::vector<std::vector<double>> loadTrainData(const std::string& folderPath) {
+std::vector<std::vector<double>> loadData(const std::string& folderPath, const std::string& type="train") {
     std::vector<std::vector<double>> train_data;
-    
+    printf("== Loading %s data...\n", type.c_str());
     try {
         // Kiểm tra folder có tồn tại không
         if (!std::filesystem::exists(folderPath)) {
@@ -71,14 +71,22 @@ std::vector<std::vector<double>> loadTrainData(const std::string& folderPath) {
         }
         
         // Lấy danh sách tất cả file .bin trong folder
-        std::vector<std::string> binFiles;
+        std::vector<std::string> allFiles;
         for (const auto& entry : std::filesystem::directory_iterator(folderPath)) {
-            if (entry.is_regular_file() && entry.path().extension() == ".bin" && 
-                entry.path().filename().string().find("data") != std::string::npos) {
-                binFiles.push_back(entry.path().string());
+            if (entry.is_regular_file() && entry.path().extension() == ".bin") {
+                allFiles.push_back(entry.path().string());
             }
         }
-        
+        std::vector<std::string> binFiles;
+
+        for (const auto& filepath : allFiles) {
+            std::string filename = std::filesystem::path(filepath).filename().string();
+            if (type == "train" && filename.find("data_batch_1") != std::string::npos) {
+                binFiles.push_back(filepath);
+            } else if (type == "test" && filename.find("test_batch") != std::string::npos) {
+                binFiles.push_back(filepath);
+            }
+        }
         // Sắp xếp file theo tên để đảm bảo thứ tự
         std::sort(binFiles.begin(), binFiles.end());
         
@@ -88,9 +96,6 @@ std::vector<std::vector<double>> loadTrainData(const std::string& folderPath) {
         for (const auto& filepath : binFiles) {
             try {
                 auto imageData = readBinaryFile(filepath);
-                // printf("  Loaded %zu images\n", imageData.size());
-                
-                // Extract only the pixel data (second element of pair) for training
                 for (const auto& imagePair : imageData) {
                     train_data.push_back(imagePair.second); // Extract only pixels
                 }
@@ -115,8 +120,9 @@ int main() {
     std::cout << "Current working directory: " << std::filesystem::current_path() << std::endl;
     std::cout << "Looking for data at: " << std::filesystem::absolute(dataFolder) << std::endl;
     
-    std::cout << "Loading training data..." << std::endl;
-    std::vector<std::vector<double>> train_data = loadTrainData(dataFolder);
+    std::vector<std::vector<double>> train_data = loadData(dataFolder, "train");
+    std::vector<std::vector<double>> test_data = loadData(dataFolder, "test");
+
     std::cout << "Loaded " << train_data.size() << " samples" << std::endl;
     
     if (train_data.empty()) {
@@ -125,24 +131,28 @@ int main() {
     }
     
     // Training parameters
-    int EPOCHS = 5;
-    int BATCH_SIZE = 3; // Reduced for GPU memory
+    int EPOCHS = 2;
+    int BATCH_SIZE = 128; // Reduced for GPU memory
     double LR = 0.001;
     double MOMENTUM = 0.9;
     
-    int total_samples = train_data.size();
-    int total_batches = (total_samples + BATCH_SIZE - 1) / BATCH_SIZE;
-
-    std::cout << "\n=== Starting GPU Training ===" << std::endl;
-    std::cout << "Total samples: " << total_samples << std::endl;
-    std::cout << "Batch size: " << BATCH_SIZE << std::endl;
-    std::cout << "Total batches per epoch: " << total_batches << std::endl;
+    // Print training configuration
+    std::cout << "==== Training Configuration:" << std::endl;
     std::cout << "Epochs: " << EPOCHS << std::endl;
-    std::cout << "================================" << std::endl;
+    std::cout << "Batch Size: " << BATCH_SIZE << std::endl;
+    std::cout << "Learning Rate: " << LR << std::endl;
+    std::cout << "Momentum: " << MOMENTUM << std::endl;
+
+    int total_train_samples = train_data.size();
+    int total_train_batches = (total_train_samples + BATCH_SIZE - 1) / BATCH_SIZE;
+
+    int total_test_samples = test_data.size();
+    int total_test_batches = (total_test_samples + BATCH_SIZE - 1) / BATCH_SIZE;
+
 
     // Initialize GPU Autoencoder
     GPUAutoencoder ae(LR, MOMENTUM);
-    ae.setTrain();
+    
     ae.load_weights("../weights/test_weights.bin"); // Load initial weights if available
     // CUDA Events for timing
     cudaEvent_t start, stop;
@@ -150,30 +160,28 @@ int main() {
     cudaEventCreate(&stop);
 
     // Training loop for multiple epochs
-    int ok = 0;
+    // int ok = 0;
     for (int epoch = 0; epoch < EPOCHS; ++epoch) {
         double epoch_loss = 0.0f;
         int processed_batches = 0;
-        
+        float train_milliseconds = 0, test_milliseconds = 0;
         std::cout << "\n=== Epoch " << (epoch + 1) << "/" << EPOCHS << " ===" << std::endl;
         
         // Start epoch timing
         cudaEventRecord(start);
-        if (ok > 4){
-            break;
-        }
         // Process data in batches
-        for (int i = 0; i < total_samples; i += BATCH_SIZE) {
-            int current_batch_size = std::min(BATCH_SIZE, total_samples - i);
+        printf("\nStarting training batches...\n");
+
+        ae.setTrain();
+        
+        for (int i = 0; i < total_train_samples; i += BATCH_SIZE) {
+            int current_batch_size = std::min(BATCH_SIZE, total_train_samples - i);
             int current_batch_num = (i / BATCH_SIZE) + 1;
 
-            ok ++;
-            if (ok > 4){
-                ae.save_weights("../weights/gpu_trained_weights.bin");
-                break;
-            }
-            std::cout << "\rProcessing batch " << current_batch_num << "/" << total_batches 
-                      << " (samples " << i << " to " << (i + current_batch_size - 1) << ")" << std::flush;
+            std::cout << "\rProcessing batch " << current_batch_num << "/" << total_train_batches 
+                      << " (samples " << i << " to " << (i + current_batch_size - 1) << ")"<<std::flush;
+                      
+                      
             
             // Prepare batch data - flatten to single vector
             std::vector<double> batch_data;
@@ -186,32 +194,86 @@ int main() {
             
             // Train on batch using GPU
             ae.train_batch(batch_data, current_batch_size);
-            
+            if ((processed_batches+1) % 10 == 0)
+                std::cout<<"|\tSingle batch Loss: "<< std::fixed << std::setprecision(6) << ae.getLoss() << std::endl;
+
             epoch_loss += ae.getLoss();
             processed_batches++;
         }
 
+        cudaEventRecord(stop);
+        cudaEventSynchronize(stop);
+        
+        cudaEventElapsedTime(&train_milliseconds, start, stop);
+
+        printf("\nStarting testing batches...\n");
+
+        ae.setEval();
+        cudaEventRecord(start);
+        double test_loss = 0.0f;
+        for (int i = 0; i < total_test_samples; i += BATCH_SIZE) {
+            int current_batch_size = std::min(BATCH_SIZE, total_test_samples - i);
+            int current_batch_num = (i / BATCH_SIZE) + 1;
+
+            // ok ++;
+            // if (ok == 5 && BATCH_SIZE == 3){
+            //     ae.save_weights("../weights/gpu_trained_weights_checking.bin");
+            //     break;
+            // }
+            std::cout << "\rProcessing batch " << current_batch_num << "/" << total_test_batches 
+                      << " (samples " << i << " to " << (i + current_batch_size - 1) << ")"<<std::flush;
+                      
+                      
+            
+            // Prepare batch data - flatten to single vector
+            std::vector<double> batch_data;
+            batch_data.reserve(current_batch_size * 3072); // 32*32*3 = 3072
+            
+            for (int j = 0; j < current_batch_size; j++) {
+                const auto& image = test_data[i + j];
+                batch_data.insert(batch_data.end(), image.begin(), image.end());
+            }
+            
+            // Train on batch using GPU
+            ae.train_batch(batch_data, current_batch_size);
+
+            test_loss += ae.getLoss();
+        }
         // Stop epoch timing
         cudaEventRecord(stop);
         cudaEventSynchronize(stop);
-        float milliseconds = 0;
-        cudaEventElapsedTime(&milliseconds, start, stop);
+        
+        cudaEventElapsedTime(&test_milliseconds, start, stop);
 
         // Calculate epoch statistics
-        double avg_epoch_loss = epoch_loss / processed_batches;
+        double avg_epoch_loss = epoch_loss / processed_batches; 
+        double avg_test_loss = test_loss / total_test_batches;
         
         std::cout << "\n--- Epoch " << (epoch + 1) << " Summary ---" << std::endl;
         std::cout << "Batches processed: " << processed_batches << std::endl;
-        std::cout << "Average loss: " << std::fixed << std::setprecision(6) << avg_epoch_loss << std::endl;
-        std::cout << "Epoch time: " << std::fixed << std::setprecision(2) << (milliseconds / 1000.0f) << " seconds" << std::endl;
-        std::cout << "Samples/second: " << std::fixed << std::setprecision(1) << (total_samples / (milliseconds / 1000.0f)) << std::endl;
-                  
+        std::cout << "Average train loss: " << std::fixed << std::setprecision(6) << avg_epoch_loss << std::endl;
+        std::cout << "Average test loss: " << std::fixed << std::setprecision(6) << avg_test_loss << std::endl;
+        std::cout << "Epoch train time: " << std::fixed << std::setprecision(2) << (train_milliseconds / 1000.0f) << " seconds" << std::endl;
+        std::cout << "Inference time: " << std::fixed << std::setprecision(2) << (test_milliseconds / 1000.0f) << " seconds" << std::endl;
+
         // Save weights periodically
         // if ((epoch + 1) % 2 == 0) {
         //     std::cout << "Saving weights checkpoint..." << std::endl;
         //     ae.get_weights_to_host();
         // }
     }
+    printf("=== Time summary ===\n");
+    printf("Total Kernel Time: %.2f ms\n", ae.getTotalKernelTime());
+    printf("Convolution Forward Time: %.2f ms||| Ratio: %.2f%%\n", ae.getConvForwardTime(), (ae.getConvForwardTime() / ae.getTotalKernelTime()) * 100.0);
+    printf("Convolution Backward Time: %.2f ms||| Ratio: %.2f%%\n", ae.getConvBackwardTime(), (ae.getConvBackwardTime() / ae.getTotalKernelTime()) * 100.0);
+    double conv_time = ae.getConvForwardTime() + ae.getConvBackwardTime();
+    printf("Convolution Time: %.2f ms||| Ratio: %.2f%%\n", conv_time, (conv_time / ae.getTotalKernelTime()) * 100.0);
+    double relu_time = ae.getReluForwardTime() + ae.getReluBackwardTime();
+    
+    printf("ReLU Time: %.2f ms||| Ratio: %.2f%%\n", relu_time, (relu_time / ae.getTotalKernelTime()) * 100.0);
+    double pool_time = ae.getPoolForwardTime() + ae.getPoolBackwardTime(); 
+    printf("Pooling Time: %.2f ms||| Ratio: %.2f%%\n", pool_time, (pool_time / ae.getTotalKernelTime()) * 100.0);
+    
 
     // Cleanup CUDA events
     cudaEventDestroy(start);
