@@ -10,18 +10,33 @@ Mô tả các hàm:
 + `gpu-train.cpp`: train gpu-autoencoder, xuất ra file weights/gpu_trained_weights.bin
 + `compare_bins.cpp`: so sánh 2 tập weight 
 
+#### Evaluation:
+
+Setup: 
++ Batchsize = 32
++ epoch = 1
++ blocksize = 32
+
+Ground truth loss (dùng để so sánh để xem kết quả có bị thay đổi không):
+
+Processing batch 10/313 (samples 288 to 319)|   Single batch Loss: 0.297234
+Processing batch 20/313 (samples 608 to 639)|   Single batch Loss: 0.229707
+Processing batch 30/313 (samples 928 to 959)|   Single batch Loss: 0.229481
+Processing batch 40/313 (samples 1248 to 1279)|   Single batch Loss: 0.215662
+Processing batch 50/313 (samples 1568 to 1599)|   Single batch Loss: 0.202848
+
 #### Cập nhật 10/12:
 Đã fix bug. 2 bộ weights của cpu và gpu đã giống nhau sau vài lần backprop
 
 Thời gian đo hiện tại:
 ```
 === Time summary ===
-Total Kernel Time: 403288.14 ms
-Convolution Forward Time: 39523.29 ms||| Ratio: 9.80%
-Convolution Backward Time: 361250.60 ms||| Ratio: 89.58%
-Convolution Time: 400773.89 ms||| Ratio: 99.38%
-ReLU Time: 898.60 ms||| Ratio: 0.22%
-Pooling Time: 1615.64 ms||| Ratio: 0.40%
+Total Kernel Time: 198470.66 ms
+Convolution Forward Time: 19456.93 ms||| Ratio: 9.80%
+Convolution Backward Time: 177719.29 ms||| Ratio: 89.54%
+Convolution Time: 197176.22 ms||| Ratio: 99.35%
+ReLU Time: 468.41 ms||| Ratio: 0.24%
+Pooling Time: 826.04 ms||| Ratio: 0.42%
 ```
 
 #### Cập nhật 11/12:
@@ -29,12 +44,18 @@ Optimize hàm backward cho weight và input theo hướng sử dụng shared mem
 Thời gian không cải thiện. Kết quả ra vẫn đúng. Khả năng là do sai:
 ```
 === Time summary ===
-Total Kernel Time: 443458.92 ms
-Convolution Forward Time: 39600.96 ms||| Ratio: 8.93%
-Convolution Backward Time: 401333.87 ms||| Ratio: 90.50%
-Convolution Time: 440934.83 ms||| Ratio: 99.43%
-ReLU Time: 917.14 ms||| Ratio: 0.21%
-Pooling Time: 1606.95 ms||| Ratio: 0.36%
-
-=== GPU Training Completed ===
+Total Kernel Time: 216439.65 ms
+Convolution Forward Time: 18708.59 ms||| Ratio: 8.64%
+Convolution Backward Time: 196452.94 ms||| Ratio: 90.77%
+Convolution Time: 215161.53 ms||| Ratio: 99.41%
+ReLU Time: 471.13 ms||| Ratio: 0.22%
+Pooling Time: 806.99 ms||| Ratio: 0.37%
 ```
+
+#### Cập nhật 12/12:
+##### Refactor:
+- Giữ lại kernel không tối ưu: `k_conv2d_backward_input`, `k_conv2d_backward_weights`
+- Rename các kernel smem: `k_conv2d_backward_input_smem`, `k_conv2d_backward_weights_smem`
+
+
+

@@ -237,6 +237,72 @@ __global__ void k_conv2d_backward_input(double* d_output, double* weights, doubl
     int b_ic = blockIdx.z;
 
     if (iw >= W || ih >= H) return;
+
+    int ic = b_ic % inC;
+    int b = b_ic / inC;
+    double sum = 0.0f;
+
+    for(int oc=0; oc<outC; ++oc) {
+        for(int kh=0; kh<K; ++kh) {
+            for(int kw=0; kw<K; ++kw) {
+                int oh_num = ih + padding - kh;
+                int ow_num = iw + padding - kw;
+                if (oh_num % stride == 0 && ow_num % stride == 0) {
+                    int oh = oh_num / stride;
+                    int ow = ow_num / stride;
+                    if (oh >= 0 && oh < H && ow >= 0 && ow < W) {
+                        int w_idx = ((oc * inC + ic) * K + kh) * K + kw;
+                        int dout_idx = ((b * outC + oc) * H + oh) * W + ow;
+                        sum += d_output[dout_idx] * weights[w_idx];
+                    }
+                }
+            }
+        }
+    }
+    int din_idx = ((b * inC + ic) * H + ih) * W + iw;
+    d_input[din_idx] = sum;
+}
+
+__global__ void k_conv2d_backward_weights(double* input, double* d_output, double* d_weights, double* d_bias,
+                                          int inC, int outC, int H, int W, int K, int padding, int stride) {
+    int ow = blockIdx.x * blockDim.x + threadIdx.x;
+    int oh = blockIdx.y * blockDim.y + threadIdx.y;
+    int b_oc = blockIdx.z;
+
+    if (ow >= W || oh >= H) return;
+
+    int oc = b_oc % outC;
+    int b = b_oc / outC;
+    
+    int dout_idx = ((b * outC + oc) * H + oh) * W + ow;
+    double d_val = d_output[dout_idx];
+
+    atomicAdd(&d_bias[oc], d_val);
+
+    for(int ic=0; ic<inC; ++ic) {
+        for(int kh=0; kh<K; ++kh) {
+            for(int kw=0; kw<K; ++kw) {
+                int ih = oh * stride + kh - padding;
+                int iw = ow * stride + kw - padding;
+
+                if (ih >= 0 && ih < H && iw >= 0 && iw < W) {
+                    int in_idx = ((b * inC + ic) * H + ih) * W + iw;
+                    double val = input[in_idx];
+                    int w_idx = ((oc * inC + ic) * K + kh) * K + kw;
+                    atomicAdd(&d_weights[w_idx], val * d_val);
+                }
+            }
+        }
+    }
+}
+
+__global__ void k_conv2d_backward_input_smem(double* d_output, double* weights, double* d_input,
+                                        int inC, int outC, int H, int W, int K, int padding, int stride) {
+    int iw = blockIdx.x * blockDim.x + threadIdx.x;
+    int ih = blockIdx.y * blockDim.y + threadIdx.y;
+    int b_ic = blockIdx.z;
+
+    if (iw >= W || ih >= H) return;
     extern __shared__ double s_input[];
     int ic = b_ic % inC;
     int b = b_ic / inC;
@@ -275,7 +341,7 @@ __global__ void k_conv2d_backward_input(double* d_output, double* weights, doubl
             s_input[s_idx] = 0.0f;
         }
     }
-    __syncthreads();
+    
     for(int oc=0; oc<outC; ++oc) {
         // Center 
         int oh, ow, out_idx, s_idx;
@@ -379,7 +445,7 @@ __global__ void k_conv2d_backward_input(double* d_output, double* weights, doubl
     d_input[din_idx] = sum;
 }
 
-__global__ void k_conv2d_backward_weights(double* input, double* d_output, double* d_weights, double* d_bias,
+__global__ void k_conv2d_backward_weights_smem(double* input, double* d_output, double* d_weights, double* d_bias,
                                           int inC, int outC, int H, int W, int K, int padding, int stride) {
     int ow = blockIdx.x * blockDim.x + threadIdx.x;
     int oh = blockIdx.y * blockDim.y + threadIdx.y;
@@ -505,7 +571,6 @@ __global__ void k_conv2d_backward_weights(double* input, double* d_output, doubl
             ih = oh * stride + K - padding;
             iw = ow * stride + K - padding;
             in_idx = ((b* inC + ic) * H + ih) * W + iw;
-            w_idx = ((oc * inC + ic) * K + K-1) * K + K-1;
             if (ih >= 0 && ih < H && iw >= 0 && iw < W){
                 s_idx = (tid_y + K/2 + blockDim.y) * s_width + (tid_x + K/2 + blockDim.x);
                 s_input[s_idx] += input[in_idx];
@@ -779,19 +844,18 @@ void GPUAutoencoder::backwardPass(int batchSize) {
     int blockSize = 32;
     dim3 block(blockSize, blockSize);
     
-    // Output layer (dec_conv5) - 32x32x3
     int H_out = 32, W_out = 32, outC = 3, inC = 256;
     int filterWidth = 3, padding = 1, stride = 1;
     dim3 grid((W_out-1)/blockSize + 1, (H_out-1)/blockSize + 1, batchSize*outC);
     size_t sharedMemSize = (blockSize + filterWidth - 1) * (blockSize + filterWidth - 1) * sizeof(double);
     measureKernelTime([&](){
-        k_conv2d_backward_weights<<<grid, block, sharedMemSize>>>(d_dec_ups2, d_grad_output, d_dw_dec_conv5, d_db_dec_conv5, inC, outC, H_out, W_out, filterWidth, padding, stride);
+        k_conv2d_backward_weights_smem<<<grid, block, sharedMemSize>>>(d_dec_ups2, d_grad_output, d_dw_dec_conv5, d_db_dec_conv5, inC, outC, H_out, W_out, filterWidth, padding, stride);
     }, conv_backward_time, "Conv2D Backward Weights");
     CHECK(cudaGetLastError());
 
     grid = dim3((W_out-1)/blockSize + 1, (H_out-1)/blockSize + 1, batchSize*inC);
     measureKernelTime([&](){
-        k_conv2d_backward_input<<<grid, block, sharedMemSize>>>(d_grad_output, d_w_dec_conv5, d_grad_dec_ups2, inC, outC, H_out, W_out, filterWidth, padding, stride);
+        k_conv2d_backward_input_smem<<<grid, block, sharedMemSize>>>(d_grad_output, d_w_dec_conv5, d_grad_dec_ups2, inC, outC, H_out, W_out, filterWidth, padding, stride);
     }, conv_backward_time, "Conv2D Backward Input");
     CHECK(cudaGetLastError());
 
@@ -810,14 +874,14 @@ void GPUAutoencoder::backwardPass(int batchSize) {
     // printf("Backward Pass:\n");
     grid = dim3((W_out-1)/blockSize + 1, (H_out-1)/blockSize + 1, batchSize*outC);
     measureKernelTime([&](){   
-        k_conv2d_backward_weights<<<grid, block, sharedMemSize>>>(d_dec_ups1, d_grad_dec_conv4, d_dw_dec_conv4, d_db_dec_conv4, inC, outC, H_out, W_out, filterWidth, padding, stride);
+        k_conv2d_backward_weights_smem<<<grid, block, sharedMemSize>>>(d_dec_ups1, d_grad_dec_conv4, d_dw_dec_conv4, d_db_dec_conv4, inC, outC, H_out, W_out, filterWidth, padding, stride);
     }, conv_backward_time, "Conv2D Backward Weights");
     CHECK(cudaGetLastError());
 
     
     grid = dim3((W_out-1)/blockSize + 1, (H_out-1)/blockSize + 1, batchSize*inC);
     measureKernelTime([&](){
-        k_conv2d_backward_input<<<grid, block, sharedMemSize >>>(d_grad_dec_conv4, d_w_dec_conv4, d_grad_dec_ups1, inC, outC, H_out, W_out, filterWidth, padding, stride);
+        k_conv2d_backward_input_smem<<<grid, block, sharedMemSize >>>(d_grad_dec_conv4, d_w_dec_conv4, d_grad_dec_ups1, inC, outC, H_out, W_out, filterWidth, padding, stride);
     }, conv_backward_time, "Conv2D Backward Input");
     CHECK(cudaGetLastError());
 
@@ -837,13 +901,13 @@ void GPUAutoencoder::backwardPass(int batchSize) {
 
     grid = dim3((W_out-1)/blockSize + 1, (H_out-1)/blockSize + 1, batchSize*outC);
     measureKernelTime([&](){
-        k_conv2d_backward_weights<<<grid, block, sharedMemSize>>>(d_latent, d_grad_dec_conv3, d_dw_dec_conv3, d_db_dec_conv3, inC, outC, H_out, W_out, filterWidth, padding, stride);
+        k_conv2d_backward_weights_smem<<<grid, block, sharedMemSize>>>(d_latent, d_grad_dec_conv3, d_dw_dec_conv3, d_db_dec_conv3, inC, outC, H_out, W_out, filterWidth, padding, stride);
     }, conv_backward_time, "Conv2D Backward Weights");
     CHECK(cudaGetLastError());
 
     grid = dim3((W_out-1)/blockSize + 1, (H_out-1)/blockSize + 1, batchSize*inC);
     measureKernelTime([&](){
-        k_conv2d_backward_input<<<grid, block, sharedMemSize>>>(d_grad_dec_conv3, d_w_dec_conv3, d_grad_latent, inC, outC, H_out, W_out, filterWidth, padding, stride);
+        k_conv2d_backward_input_smem<<<grid, block, sharedMemSize>>>(d_grad_dec_conv3, d_w_dec_conv3, d_grad_latent, inC, outC, H_out, W_out, filterWidth, padding, stride);
     }, conv_backward_time, "Conv2D Backward Input");
     CHECK(cudaGetLastError());
 
@@ -862,13 +926,13 @@ void GPUAutoencoder::backwardPass(int batchSize) {
 
     grid = dim3((W_out-1)/blockSize + 1, (H_out-1)/blockSize + 1, batchSize*outC);
     measureKernelTime([&](){
-        k_conv2d_backward_weights<<<grid, block, sharedMemSize>>>(d_enc_pool1, d_grad_enc_conv2, d_dw_enc_conv2, d_db_enc_conv2, inC, outC, H_out, W_out, filterWidth, padding, stride);
+        k_conv2d_backward_weights_smem<<<grid, block, sharedMemSize>>>(d_enc_pool1, d_grad_enc_conv2, d_dw_enc_conv2, d_db_enc_conv2, inC, outC, H_out, W_out, filterWidth, padding, stride);
     }, conv_backward_time, "Conv2D Backward Weights");
     CHECK(cudaGetLastError());
 
     grid = dim3((W_out-1)/blockSize + 1, (H_out-1)/blockSize + 1, batchSize*inC);
     measureKernelTime([&](){
-        k_conv2d_backward_input<<<grid, block, sharedMemSize>>>(d_grad_enc_conv2, d_w_enc_conv2, d_grad_enc_pool1, inC, outC, H_out, W_out, filterWidth, padding, stride);
+        k_conv2d_backward_input_smem<<<grid, block, sharedMemSize>>>(d_grad_enc_conv2, d_w_enc_conv2, d_grad_enc_pool1, inC, outC, H_out, W_out, filterWidth, padding, stride);
     }, conv_backward_time, "Conv2D Backward Input");
     CHECK(cudaGetLastError());
 
@@ -887,7 +951,7 @@ void GPUAutoencoder::backwardPass(int batchSize) {
 
     grid = dim3((W_out-1)/blockSize + 1, (H_out-1)/blockSize + 1, batchSize*outC);
     measureKernelTime([&](){
-        k_conv2d_backward_weights<<<grid, block, sharedMemSize>>>(d_input, d_grad_enc_conv1, d_dw_enc_conv1, d_db_enc_conv1, inC, outC, H_out, W_out, filterWidth, padding, stride);
+        k_conv2d_backward_weights_smem<<<grid, block, sharedMemSize>>>(d_input, d_grad_enc_conv1, d_dw_enc_conv1, d_db_enc_conv1, inC, outC, H_out, W_out, filterWidth, padding, stride);
     }, conv_backward_time, "Conv2D Backward Weights");
     CHECK(cudaGetLastError());
     // No need backward input for the very first layer
