@@ -505,7 +505,6 @@ __global__ void k_conv2d_backward_weights(double* input, double* d_output, doubl
             ih = oh * stride + K - padding;
             iw = ow * stride + K - padding;
             in_idx = ((b* inC + ic) * H + ih) * W + iw;
-            w_idx = ((oc * inC + ic) * K + K-1) * K + K-1;
             if (ih >= 0 && ih < H && iw >= 0 && iw < W){
                 s_idx = (tid_y + K/2 + blockDim.y) * s_width + (tid_x + K/2 + blockDim.x);
                 s_input[s_idx] += input[in_idx];
