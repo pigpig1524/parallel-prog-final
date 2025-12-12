@@ -94,7 +94,8 @@ void ConvLayer::forward(const float* inputBatch, float* outputBatch, int inputWi
             }
         }
     }
-    this->_outputCache = outputBatch;
+    // this->_outputCache = outputBatch;
+    // memcpy(this->_outputCache, outputBatch, sizeof(float) * batchSize * outputSize);
 }
 
 void ConvLayer::backward(const float* inputBatch, const float* gradOutput, float* gradInput, int inputWidth, int inputHeight, int batchSize) {

@@ -3,6 +3,7 @@
 #include "conv.cpp"
 #include "maxpool.cpp"
 #include "upsample.cpp"
+#include "activation.cpp"
 
 class AutoEncoder {
     private:
@@ -10,6 +11,10 @@ class AutoEncoder {
         MaxPool** pools;
         UpSample** upsamples;
         ConvLayer** decoderConvs;
+        std::vector<float*> encoderOutputs;
+        std::vector<float*> decoderOutputs;
+        std::vector<float*> poolOutputs;
+        std::vector<float*> upsampleOutputs;
 
         int inputWidth = 32;
         int inputHeight = 32;
@@ -23,12 +28,15 @@ class AutoEncoder {
         float** decoderWeights;
         float** decoderBiases;
 
+        float * latentCache;
+
     public:
         AutoEncoder(int inputW, int inputH, int inputC, int latentW, int latentH, int latentC);
         ~AutoEncoder();
         void loadModel(const char* modelPath);
         void saveModel(const char* modelPath);
         void initialize(int inputW, int inputH, int inputC, int latentW, int latentH, int latentC);
+        void encode(const float* inputBatch, float* latentBatch, int batchSize=32);
         void forward(const float* inputBatch, float* outputBatch, int batchSize=32);
         void backward(const float* inputBatch, const float* outputBatch, float* gradInput, int batchSize=32);
         void updateWeights(float learningRate);

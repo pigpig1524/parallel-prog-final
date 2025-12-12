@@ -28,7 +28,7 @@ namespace utils {
             grad[i] = (output[i] - target[i]) * 2.0f / size;
     }
 
-    void calcMSE(float* predicted, float* actual, int size, float& mse) {
+    void calcMSE(const float* predicted, const float* actual, int size, float& mse) {
         mse = 0.0f;
         for (int i = 0; i < size; i++) {
             float diff = predicted[i] - actual[i];
