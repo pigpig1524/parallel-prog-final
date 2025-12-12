@@ -23,6 +23,36 @@ class NNUtils {
             }
         }
 
+        /**
+         * 
+         * This function initializes convolutional layer weights using He initialization.
+         *
+         * @param filterNum Number of filters.
+         * @param filterWidth Width and height of each filter (assumed square).
+         * @param inputChannels Number of input channels.
+         * @return Pointer to the initialized weights array (float).
+         */
+        static float* heInitConv(int filterNum, int filterWidth, int inputChannels) {
+            int size = filterNum * filterWidth * filterWidth * inputChannels;
+            float* arr = new float[size];
+
+            float fanIn = filterWidth * filterWidth * inputChannels;
+            float std = sqrt(2.0f / fanIn);
+
+            for (int i = 0; i < size; i++) {
+                // random số float từ -1 → 1
+                float r = ((float)rand() / RAND_MAX) * 2.0f - 1.0f;
+                arr[i] = r * std;
+            }
+            return arr;
+        }
+
+        static float* zeroBias(int filterNum) {
+            float* arr = new float[filterNum];
+            memset(arr, 0, filterNum * sizeof(float));
+            return arr;
+        }
+
         static float* randomFloatArray(int size) {
             float* arr = new float[size];
             for (int i = 0; i < size; i++) {
@@ -251,6 +281,96 @@ class NNUtils {
                 }
             }
         }
+
+    static void backwardMaxPoolBatch(
+        float* inputBatch,
+        float* outputGradBatch,
+        float* inputGradBatch,
+        int inputWidth,
+        int inputHeight,
+        int channels,
+        int batchSize,
+        int poolSize = 2,
+        int stride = 2
+    ) {
+        memset(inputGradBatch, 0, sizeof(float) * batchSize * inputWidth * inputHeight * channels);
+
+        int outputWidth = (inputWidth - poolSize) / stride + 1;
+        int outputHeight = (inputHeight - poolSize) / stride + 1;
+
+        for (int b = 0; b < batchSize; ++b) {
+            float* input = inputBatch + b*inputWidth*inputHeight*channels;
+            float* outGrad = outputGradBatch + b*outputWidth*outputHeight*channels;
+            float* inGrad = inputGradBatch + b*inputWidth*inputHeight*channels;
+
+            for (int c = 0; c < channels; ++c) {
+                for (int h = 0; h < outputHeight; ++h) {
+                    for (int w = 0; w < outputWidth; ++w) {
+                        float maxVal = -std::numeric_limits<float>::infinity();
+                        int maxH = -1, maxW = -1;
+                        for (int ph = 0; ph < poolSize; ++ph) {
+                            for (int pw = 0; pw < poolSize; ++pw) {
+                                int ih = h*stride + ph;
+                                int iw = w*stride + pw;
+                                float val = input[(c*inputHeight + ih)*inputWidth + iw];
+                                if (val > maxVal) { maxVal = val; maxH = ih; maxW = iw; }
+                            }
+                        }
+                        inGrad[(c*inputHeight + maxH)*inputWidth + maxW] += outGrad[(c*outputHeight + h)*outputWidth + w];
+                    }
+                }
+            }
+        }
+    }
+
+    static void batchUpSamplingBackward(
+        float* inputBatch,     // gradient từ output upsample (bigger)
+        float* outputBatch,    // gradient trả về cho tensor trước upsample (smaller)
+        int outputWidth,       // width của tensor nhỏ BEFORE upsample
+        int outputHeight,      // height của tensor nhỏ BEFORE upsample
+        int channels,
+        int scaleFactor,
+        int batchSize = 1
+    ) {
+        int inW = outputWidth * scaleFactor;   // width của tensor lớn (after upsample)
+        int inH = outputHeight * scaleFactor;
+
+        for (int b = 0; b < batchSize; b++) {
+            float* gradBig  = inputBatch  + b * inW * inH * channels;
+            float* gradSmall = outputBatch + b * outputWidth * outputHeight * channels;
+
+            for (int c = 0; c < channels; c++) {
+                for (int oy = 0; oy < outputHeight; oy++) {
+                    for (int ox = 0; ox < outputWidth; ox++) {
+
+                        float sumGrad = 0.0f;
+
+                        // gom gradient từ block scale x scale
+                        for (int dy = 0; dy < scaleFactor; dy++) {
+                            for (int dx = 0; dx < scaleFactor; dx++) {
+                                int iy = oy * scaleFactor + dy; 
+                                int ix = ox * scaleFactor + dx;
+
+                                sumGrad += gradBig[
+                                    c * inW * inH +
+                                    iy * inW +
+                                    ix
+                                ];
+                            }
+                        }
+
+                        gradSmall[
+                            c * outputWidth * outputHeight +
+                            oy * outputWidth +
+                            ox
+                        ] = sumGrad;
+                    }
+                }
+            }
+        }
+    }
+
+    
 };
 
 
@@ -272,6 +392,11 @@ class LossFunctions {
                 mse += diff * diff;
             }
             return mse / static_cast<float>(size);
+        }
+
+        static void mse_loss_backward(float* output, float* target, float* grad, int size) {
+            for (int i = 0; i < size; i++)
+                grad[i] = (output[i] - target[i]) * 2.0f / size;
         }
 };
 

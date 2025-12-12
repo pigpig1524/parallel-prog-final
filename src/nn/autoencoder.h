@@ -28,23 +28,27 @@ private:
     Dataset* dataset;
     float* inputValue = nullptr;
     float** hiddenEncoderValue = nullptr;
+    float** upSampleValue = nullptr;
+    float** maxPoolValue = nullptr;
     float* latentValue = nullptr;
     float** hiddenDecoderValue = nullptr;
     float* outputValue = nullptr;
 
     float error = 0;
     std::vector<float> errorHistory;
+    std::vector<float> lossHistory;
 
     void feedforward(float* inputBatch, int batchSize);
-    void backpropagate(int batchSize);
+    void backpropagate(int batchSize, float learningRate = 0.001f);
 
     void applyCurrentWeights();
+    void updateWeights(float learningRate = 0.001f);
 
 public:
     Autoencoder(Dataset * dataset);
     ~Autoencoder();
 
-    void train(int epochs = 10, int batchSize = 32);
+    void train(int epochs = 10, int batchSize = 32, float learningRate = 0.001f);
     void test();
 };
 

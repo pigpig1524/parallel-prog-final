@@ -11,8 +11,13 @@ Conv2D::Conv2D(int filterNum, int filterWidth, int inputChannels, int stride, in
     this->padding = padding;
 
     // Allocate memory for filters and biases
-    filters = new float[filterNum * filterWidth * filterWidth * inputChannels];
+    int filterSize = filterNum * filterWidth * filterWidth * inputChannels;
+
+    filters = new float[filterSize];
     biases = new float[filterNum];
+
+    filtersGradients = new float[filterSize];
+    biasesGradients = new float[filterNum];
 }
 
 Conv2D::~Conv2D() {
@@ -112,13 +117,83 @@ float* Conv2D::convolve(float * inputBatch, int inputWidth, int inputHeight, int
     return outputBatch;
 }
 
-void Conv2D::backpropagate(
-    float * inputBatch,
-    float * outputGradients,
-    float * inputGradients,
-    int inputWidth, int inputHeight,
+
+void Conv2D::backward(
+    float *inputBatch,        // (batch, H, W, C_in)
+    float *outputGradients,   // (batch, H_out, W_out, F)
+    float *inputGradients,    // (batch, H, W, C_in)
+    int inputHeight, int inputWidth,
     int batchSize
 ) {
-    // Backpropagation implementation would go here
-    
+    int H = inputHeight;
+    int W = inputWidth;
+
+    int C_in = this->inputChannels;   // số channels đầu vào
+    int F    = this->filterNum;       // số filters đầu ra
+    int K    = this->filterWidth;     // kernel size
+
+    int H_out = (H + 2 * padding - K) / stride + 1;
+    int W_out = (W + 2 * padding - K) / stride + 1;
+
+    // RESET gradients
+    memset(filtersGradients, 0, F * K * K * C_in * sizeof(float));
+    memset(biasesGradients, 0, F * sizeof(float));
+    memset(inputGradients, 0, batchSize * H * W * C_in * sizeof(float));
+
+    // === MAIN BACKWARD LOOP ===
+    for (int b = 0; b < batchSize; b++) {
+        for (int oy = 0; oy < H_out; oy++) {
+            for (int ox = 0; ox < W_out; ox++) {
+
+                for (int f = 0; f < F; f++) {
+
+                    // dL/dOutput at (b, oy, ox, f)
+                    int out_idx =
+                        b * (H_out * W_out * F) +
+                        oy * (W_out * F) +
+                        ox * F + f;
+
+                    float dOut = outputGradients[out_idx];
+
+                    // dL/dBias
+                    biasesGradients[f] += dOut;
+
+                    // Loop kernel
+                    for (int ky = 0; ky < K; ky++) {
+                        for (int kx = 0; kx < K; kx++) {
+
+                            int in_y = oy * stride + ky - padding;
+                            int in_x = ox * stride + kx - padding;
+
+                            // skip out-of-bound
+                            if (in_y < 0 || in_y >= H || in_x < 0 || in_x >= W)
+                                continue;
+
+                            for (int c = 0; c < C_in; c++) {
+
+                                // Index input pixel
+                                int in_idx =
+                                    b * (H * W * C_in) +
+                                    in_y * (W * C_in) +
+                                    in_x * C_in + c;
+
+                                // Index filter weight
+                                int w_idx =
+                                    f * (K * K * C_in) +
+                                    ky * (K * C_in) +
+                                    kx * C_in + c;
+
+                                // dL/dFilter
+                                filtersGradients[w_idx] += inputBatch[in_idx] * dOut;
+
+                                // dL/dInput
+                                inputGradients[in_idx] += filters[w_idx] * dOut;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
 }
+

@@ -12,9 +12,11 @@ class Conv2D {
 
         // Filter dim : (filterNum, filterWidth, filterWidth, inputChannels)
         float * filters = nullptr;
+        float * filtersGradients = nullptr;
 
         // Biases dim : (filterNum)
         float * biases = nullptr;
+        float * biasesGradients = nullptr;
 
     public:
         // This section for constructor and destructor
@@ -39,6 +41,10 @@ class Conv2D {
         int getInputChannels() const { return this->inputChannels; }
         int getStride() const { return this->stride; }
         int getPadding() const { return this->padding; }
+        float* getFilters() const { return this->filters; }
+        float* getBiases() const { return this->biases; }
+        float* getFiltersGradients() const { return this->filtersGradients; }
+        float* getBiasesGradients() const { return this->biasesGradients; }
 
         // This section for forward and backward propagation
 
@@ -62,5 +68,5 @@ class Conv2D {
 
         float* convolve(float * inputBatch, int inputWidth, int inputHeight, int batchSize);
 
-        void backpropagate(float * inputBatch, float * outputGradients, float * inputGradients, int inputWidth, int inputHeight, int batchSize);
+        void backward(float * inputBatch, float * outputGradients, float * inputGradients, int inputWidth, int inputHeight, int batchSize);
 };
