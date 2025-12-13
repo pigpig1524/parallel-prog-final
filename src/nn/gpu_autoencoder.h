@@ -51,6 +51,7 @@ public:
     }
     void get_weights_to_host();
     void getOutput(const std::vector<double>& h_inputBatch, std::vector<double>& h_output, int batchSize);
+    void getLatent(const std::vector<double>& h_inputBatch, std::vector<double>& h_latent, int batchSize);
     void setTrain() { train = true; }
     void setEval() { train = false; }
     bool isTraining() const { return train; }

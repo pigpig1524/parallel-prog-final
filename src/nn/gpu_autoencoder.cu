@@ -4,11 +4,9 @@
 #include <random>
 #include <iostream>
 #include <fstream>
-#include <functional>
 
-// ================= TIMING UTILITY FUNCTIONS =================
+// ================= CUDA KERNELS (NAIVE & REDUCTION) =================
 
-// Template function to measure kernel execution time using CUDA events
 template<typename Func>
 void GPUAutoencoder::measureKernelTime(Func&& kernelFunc, double& timeVariable, const char* kernelName) {
     if (train == false) {
@@ -46,8 +44,6 @@ void GPUAutoencoder::measureKernelTime(Func&& kernelFunc, double& timeVariable, 
     CHECK(cudaEventDestroy(stop));
 }
 
-// ================= CUDA KERNELS (NAIVE & REDUCTION) =================
-
 // --- FORWARD ---
 __global__ void k_conv2d_forward(double* input, double* weights, double* bias, double* output,
                                  int inC, int outC, int H, int W, int K, int padding, int stride) {
@@ -67,7 +63,8 @@ __global__ void k_conv2d_forward(double* input, double* weights, double* bias, d
             for (int kw = 0; kw < K; ++kw) {
                 int ih = oh * stride + kh - padding;
                 int iw = ow * stride + kw - padding;
-                if (ih < 0 || ih >= H || iw < 0 || iw >= W) continue;
+                ih = max(min(ih, H - 1), 0);
+                iw = max(min(iw, W - 1), 0);
                 // Tính flat index dựa vào batch, in_Channel, H và W
                 int in_idx = ((b * inC + ic) * H + ih) * W + iw;
                 int w_idx = ((oc * inC + ic) * K + kh) * K + kw;
@@ -107,7 +104,9 @@ __global__ void k_maxpool_forward(double* input, double* output, int C, int inH,
         for (int kw = 0; kw < K; ++kw) {
             int hh = ih_start + kh;
             int ww = iw_start + kw;
-            if (hh >= inH || ww >= inW) continue;
+            hh = max(min(hh, inH - 1), 0);
+            ww = max(min(ww, inW - 1), 0);
+
             int idx = (bc * inH + hh) * inW + ww;
             double val = input[idx];
             if (val > max_val) max_val = val;
@@ -134,7 +133,10 @@ __global__ void k_upsample_forward(double* input, double* output, int C, int inH
 }
 
 
-__global__ void k_mse_loss_backward_input(double* predicted, double* target, double* d_grad, double* avg_grad_sum, double* loss_val, int size) {
+
+// --- UPDATED: MSE Loss Kernel with SHARED MEMORY Reduction ---
+// Requirement 2.2: Use shared memory for partial sums
+__global__ void k_mse_loss_backward_input(double* predicted, double* target, double* d_grad, double* loss_val, int size) {
     // Shared memory để lưu tổng cục bộ của block
     extern __shared__ double sdata[];
     
@@ -146,13 +148,11 @@ __global__ void k_mse_loss_backward_input(double* predicted, double* target, dou
     
     // 1. Tính toán diff và gradient cho pixel-wise, đồng thời tính squared error
     if (idx < size) {
-        double diff = target[idx] - predicted[idx];
-        d_grad[idx] = -2.0f * diff / size; // Gradient: dL/dOutput
+        double diff = - target[idx] + predicted[idx];
+        d_grad[idx] = 2.0f * diff / size; // Gradient: dL/dOutput
         sq_diff = diff * diff / size; // Chia cho tổng số elements để có MSE
         grad_abs = fabs(d_grad[idx]);
         
-        // Atomic add to global gradient sum
-        atomicAdd(avg_grad_sum, grad_abs);
     }
     
     // 2. Load vào Shared Memory
@@ -666,7 +666,7 @@ void GPUAutoencoder::initWeightsRandomly() {
     init_layer(&d_w_dec_conv3, &d_b_dec_conv3, &d_dw_dec_conv3, &d_db_dec_conv3, &d_v_dec_conv3, &d_v_dec_conv3_b, 128, 128);
     init_layer(&d_w_dec_conv4, &d_b_dec_conv4, &d_dw_dec_conv4, &d_db_dec_conv4, &d_v_dec_conv4, &d_v_dec_conv4_b, 256, 128);
     init_layer(&d_w_dec_conv5, &d_b_dec_conv5, &d_dw_dec_conv5, &d_db_dec_conv5, &d_v_dec_conv5, &d_v_dec_conv5_b, 3, 256);
-    
+    allocateMemory(32);
 }
 
 void GPUAutoencoder::allocateMemory(int batchSize) {
@@ -697,7 +697,6 @@ void GPUAutoencoder::allocateMemory(int batchSize) {
     malloc_tensor(&d_grad_enc_pool1, 256, 16, 16);
     malloc_tensor(&d_grad_enc_conv1, 256, 32, 32);
     malloc_tensor(&d_grad_input, 3, 32, 32);
-    
 }
 
 // Requirement 2.1: Implement functions to copy weights between host and device
@@ -714,9 +713,7 @@ void GPUAutoencoder::getOutput(const std::vector<double>& h_inputBatch, std::vec
     CHECK(cudaMemcpy(h_output.data(), d_output, size * sizeof(double), cudaMemcpyDeviceToHost));
 }
 
-
-
-void GPUAutoencoder::train_batch(const std::vector<double>& h_inputBatch, int batchSize) {
+void GPUAutoencoder::getLatent(const std::vector<double>& h_inputBatch, std::vector<double>& h_latent, int batchSize) {
     if (! allocated)
         allocateMemory(batchSize);
     
@@ -724,39 +721,40 @@ void GPUAutoencoder::train_batch(const std::vector<double>& h_inputBatch, int ba
 
     forwardPass(batchSize);
 
+    int size = batchSize * 128 * 8 * 8;
+    h_latent.resize(size);
+    CHECK(cudaMemcpy(h_latent.data(), d_latent, size * sizeof(double), cudaMemcpyDeviceToHost));
+}
+
+void GPUAutoencoder::train_batch(const std::vector<double>& h_inputBatch, int batchSize) {
+    if (! allocated)
+        allocateMemory(batchSize);
+
+    CHECK(cudaMemcpy(d_input, h_inputBatch.data(), h_inputBatch.size() * sizeof(double), cudaMemcpyHostToDevice));
+
+    forwardPass(batchSize);
+
     CHECK(cudaDeviceSynchronize());
 
     double* d_loss; 
-    double* d_avg_grad_sum;
     CHECK(cudaMalloc(&d_loss, sizeof(double)));
-    CHECK(cudaMalloc(&d_avg_grad_sum, sizeof(double)));
     CHECK(cudaMemset(d_loss, 0, sizeof(double)));
-    CHECK(cudaMemset(d_avg_grad_sum, 0, sizeof(double)));
     
 
     int size = batchSize * 3 * 32 * 32; //total numbers of pixels of both input and output
     int blockSize = 32;
     int gridSize = (size - 1) / blockSize + 1;
 
-    k_mse_loss_backward_input<<<gridSize, blockSize, blockSize * sizeof(double)>>>(d_output, d_input, d_grad_output, d_avg_grad_sum, d_loss, size);
+    k_mse_loss_backward_input<<<gridSize, blockSize, blockSize * sizeof(double)>>>(d_output, d_input, d_grad_output, d_loss, size);
     
     CHECK(cudaMemcpy(&m_loss, d_loss, sizeof(double), cudaMemcpyDeviceToHost));
     
-    double avg_grad_sum;
-    CHECK(cudaMemcpy(&avg_grad_sum, d_avg_grad_sum, sizeof(double), cudaMemcpyDeviceToHost));
-    // double avg_grad = avg_grad_sum; // Calculate average
 
     if (train) {
         backwardPass(batchSize);
         updateWeights();
     }
-    
-    // Update total kernel time
-    total_kernel_time = conv_forward_time + conv_backward_time + relu_forward_time + relu_backward_time + pool_forward_time + pool_backward_time;
-    
-    // printf("\nAverage gradient: %f\n", avg_grad);
     CHECK(cudaFree(d_loss));
-    CHECK(cudaFree(d_avg_grad_sum));
 }
 
 void GPUAutoencoder::forwardPass(int batchSize){
@@ -765,76 +763,68 @@ void GPUAutoencoder::forwardPass(int batchSize){
     int H_in = 32, W_in = 32, outC = 256, inC = 3;
     int filterWidth = 3, padding = 1, stride = 1;
     dim3 grid((W_in-1)/blockSize + 1, (H_in-1)/blockSize + 1, batchSize*outC);
-    
-    // Example 1: Measure conv2d forward time using lambda
     measureKernelTime([&]() {
         k_conv2d_forward<<<grid, block>>>(d_input, d_w_enc_conv1, d_b_enc_conv1, d_enc_conv1, inC, outC, H_in, W_in, filterWidth, padding, stride);
     }, conv_forward_time, "Conv2D Forward");
-
-    // Example 2: Measure ReLU time
     measureKernelTime([&]() {
         k_relu_forward<<<(batchSize*outC*H_in*W_in-1)/256 + 1, 256>>>(d_enc_conv1, batchSize*outC*H_in*W_in);
     }, relu_forward_time, "ReLU");
 
     inC = 256, outC = 256, filterWidth = 2;
     grid = dim3((W_in-1)/blockSize + 1, (H_in-1)/blockSize + 1, batchSize*outC);
-    
-    // Example 3: Measure maxpool time
     measureKernelTime([&]() {
         k_maxpool_forward<<<grid, block>>>(d_enc_conv1, d_enc_pool1, inC, H_in, W_in, H_in/2, W_in/2);
     }, pool_forward_time, "MaxPool");
 
     H_in = 16; W_in = 16; inC = 256; outC = 128; filterWidth = 3;
     grid = dim3((W_in-1)/blockSize + 1, (H_in-1)/blockSize + 1, batchSize*outC);    
-    
-    // Example 4: Using std::function version for more complex scenarios
-    measureKernelTime([&](){
+    measureKernelTime([&]() {
+        k_conv2d_forward<<<grid, block>>>(d_enc_pool1, d_w_enc_conv2, d_b_enc_conv2, d_enc_conv2, inC, outC, H_in, W_in, filterWidth, padding, stride);
+    }, conv_forward_time, "Conv2D Forward");
+    measureKernelTime([&]() {
         k_relu_forward<<<(batchSize*outC*H_in*W_in-1)/256 + 1, 256>>>(d_enc_conv2, batchSize*outC*H_in*W_in);
-    }, relu_forward_time, "ReLU");    
-    
+    }, relu_forward_time, "ReLU");
 
     filterWidth = 2; inC=128; outC=128;
     grid = dim3((W_in-1)/blockSize + 1, (H_in-1)/blockSize + 1, batchSize*outC);
-    measureKernelTime([&](){
+    measureKernelTime([&]() {
         k_maxpool_forward<<<grid, block>>>(d_enc_conv2, d_latent, inC, H_in, W_in, H_in/2, W_in/2);
-    }, pool_forward_time, "maxPool Forward"); 
-    
+    }, pool_forward_time, "MaxPool");
 
     H_in=8; W_in=8; inC=128; outC=128; filterWidth=3;
     grid = dim3((W_in-1)/blockSize + 1, (H_in-1)/blockSize + 1, batchSize*outC);
-    measureKernelTime([&](){
-        k_conv2d_forward<<<grid, block>>>(d_latent, d_w_dec_conv3, d_b_dec_conv3, d_dec_conv3, inC, outC, H_in, W_in, filterWidth, padding, stride);
+    measureKernelTime([&]() {
+    k_conv2d_forward<<<grid, block>>>(d_latent, d_w_dec_conv3, d_b_dec_conv3, d_dec_conv3, inC, outC, H_in, W_in, filterWidth, padding, stride);
     }, conv_forward_time, "Conv2D Forward");
-
-    measureKernelTime([&](){
+    measureKernelTime([&]() {
     k_relu_forward<<<(batchSize*outC*H_in*W_in-1)/256 + 1, 256>>>(d_dec_conv3, batchSize*outC*H_in*W_in);
     }, relu_forward_time, "ReLU");
 
     filterWidth=2; inC=128; outC=128;
     grid = dim3((W_in-1)/blockSize + 1, (H_in-1)/blockSize + 1, batchSize*outC);
-    measureKernelTime([&](){
+    measureKernelTime([&]() {
         k_upsample_forward<<<grid, block>>>(d_dec_conv3, d_dec_ups1, inC, H_in, W_in, H_in*2, W_in*2);
-    }, pool_forward_time, "UpSample Forward");
+    }, pool_forward_time, "UpSample");
 
     H_in = 16; W_in = 16; inC = 128; outC = 256; filterWidth = 3;
     grid = dim3((W_in-1)/blockSize + 1, (H_in-1)/blockSize + 1, batchSize*outC);
-    measureKernelTime([&](){
+    measureKernelTime([&]() {
         k_conv2d_forward<<<grid, block>>>(d_dec_ups1, d_w_dec_conv4, d_b_dec_conv4, d_dec_conv4, inC, outC, H_in, W_in, filterWidth, padding, stride);
     }, conv_forward_time, "Conv2D Forward");
-    
-    measureKernelTime([&](){
+    measureKernelTime([&]() {
         k_relu_forward<<<(batchSize*outC*H_in*W_in-1)/256 + 1, 256>>>(d_dec_conv4, batchSize*outC*H_in*W_in);
     }, relu_forward_time, "ReLU");
 
     filterWidth=2; inC=256; outC=256;
     grid = dim3((W_in-1)/blockSize + 1, (H_in-1)/blockSize + 1, batchSize*outC);
-    measureKernelTime([&](){
+    measureKernelTime([&]() {
         k_upsample_forward<<<grid, block>>>(d_dec_conv4, d_dec_ups2, inC, H_in, W_in, H_in*2, W_in*2);
-    }, pool_forward_time, "UpSample Forward");
+    }, pool_forward_time, "UpSample");
     
+
     H_in = 32; W_in = 32; inC = 256; outC = 3; filterWidth = 3;
     grid = dim3((W_in-1)/blockSize + 1, (H_in-1)/blockSize + 1, batchSize*outC);
-    measureKernelTime([&](){
+    measureKernelTime([&]() {
         k_conv2d_forward<<<grid, block>>>(d_dec_ups2, d_w_dec_conv5, d_b_dec_conv5, d_output, inC, outC, H_in, W_in, filterWidth, padding, stride);
     }, conv_forward_time, "Conv2D Forward");
 
@@ -844,118 +834,106 @@ void GPUAutoencoder::backwardPass(int batchSize) {
     int blockSize = 32;
     dim3 block(blockSize, blockSize);
     
+    // Output layer (dec_conv5) - 32x32x3
     int H_out = 32, W_out = 32, outC = 3, inC = 256;
     int filterWidth = 3, padding = 1, stride = 1;
     dim3 grid((W_out-1)/blockSize + 1, (H_out-1)/blockSize + 1, batchSize*outC);
-    size_t sharedMemSize = (blockSize + filterWidth - 1) * (blockSize + filterWidth - 1) * sizeof(double);
-    measureKernelTime([&](){
-        k_conv2d_backward_weights_smem<<<grid, block, sharedMemSize>>>(d_dec_ups2, d_grad_output, d_dw_dec_conv5, d_db_dec_conv5, inC, outC, H_out, W_out, filterWidth, padding, stride);
+    // size_t sharedMemSize = (blockSize + filterWidth - 1) * (blockSize + filterWidth - 1) * sizeof(double);
+    measureKernelTime([&]() {  
+        k_conv2d_backward_weights<<<grid, block>>>(d_dec_ups2, d_grad_output, d_dw_dec_conv5, d_db_dec_conv5, inC, outC, H_out, W_out, filterWidth, padding, stride);
     }, conv_backward_time, "Conv2D Backward Weights");
-    CHECK(cudaGetLastError());
 
     grid = dim3((W_out-1)/blockSize + 1, (H_out-1)/blockSize + 1, batchSize*inC);
-    measureKernelTime([&](){
-        k_conv2d_backward_input_smem<<<grid, block, sharedMemSize>>>(d_grad_output, d_w_dec_conv5, d_grad_dec_ups2, inC, outC, H_out, W_out, filterWidth, padding, stride);
+    measureKernelTime([&]() {
+    k_conv2d_backward_input<<<grid, block>>>(d_grad_output, d_w_dec_conv5, d_grad_dec_ups2, inC, outC, H_out, W_out, filterWidth, padding, stride);
     }, conv_backward_time, "Conv2D Backward Input");
-    CHECK(cudaGetLastError());
-
     // Upsample2 backward
     inC = 256; outC = 256; filterWidth = 2;
     grid = dim3((W_out-1)/blockSize + 1, (H_out-1)/blockSize + 1, batchSize*inC);
-    measureKernelTime([&](){
-        k_upsample_backward<<<grid, block>>>(d_grad_dec_ups2, d_grad_dec_conv4, H_out/2, W_out/2, H_out, W_out);
+    measureKernelTime([&]() {
+    k_upsample_backward<<<grid, block>>>(d_grad_dec_ups2, d_grad_dec_conv4, H_out/2, W_out/2, H_out, W_out);
     }, pool_backward_time, "UpSample Backward");
-    
     // dec_conv4 backward - 16x16x256  
     H_out = 16; W_out = 16; outC = 256; inC = 128; filterWidth = 3;
-    measureKernelTime([&](){
-        k_relu_backward<<<(batchSize*outC*H_out*W_out-1)/256 + 1, 256>>>(d_dec_conv4, d_grad_dec_conv4, d_grad_dec_conv4, batchSize*outC*H_out*W_out);
+    measureKernelTime([&]() {
+    k_relu_backward<<<(batchSize*outC*H_out*W_out-1)/256 + 1, 256>>>(d_dec_conv4, d_grad_dec_conv4, d_grad_dec_conv4, batchSize*outC*H_out*W_out);
     }, relu_backward_time, "ReLU Backward");
-    // printf("Backward Pass:\n");
-    grid = dim3((W_out-1)/blockSize + 1, (H_out-1)/blockSize + 1, batchSize*outC);
-    measureKernelTime([&](){   
-        k_conv2d_backward_weights_smem<<<grid, block, sharedMemSize>>>(d_dec_ups1, d_grad_dec_conv4, d_dw_dec_conv4, d_db_dec_conv4, inC, outC, H_out, W_out, filterWidth, padding, stride);
-    }, conv_backward_time, "Conv2D Backward Weights");
-    CHECK(cudaGetLastError());
-
     
+    grid = dim3((W_out-1)/blockSize + 1, (H_out-1)/blockSize + 1, batchSize*outC);
+    measureKernelTime([&]() {
+    k_conv2d_backward_weights<<<grid, block>>>(d_dec_ups1, d_grad_dec_conv4, d_dw_dec_conv4, d_db_dec_conv4, inC, outC, H_out, W_out, filterWidth, padding, stride);
+    }, conv_backward_time, "Conv2D Backward Weights");
+
     grid = dim3((W_out-1)/blockSize + 1, (H_out-1)/blockSize + 1, batchSize*inC);
-    measureKernelTime([&](){
-        k_conv2d_backward_input_smem<<<grid, block, sharedMemSize >>>(d_grad_dec_conv4, d_w_dec_conv4, d_grad_dec_ups1, inC, outC, H_out, W_out, filterWidth, padding, stride);
+    measureKernelTime([&]() {
+    k_conv2d_backward_input<<<grid, block>>>(d_grad_dec_conv4, d_w_dec_conv4, d_grad_dec_ups1, inC, outC, H_out, W_out, filterWidth, padding, stride);
     }, conv_backward_time, "Conv2D Backward Input");
-    CHECK(cudaGetLastError());
 
     // Upsample1 backward
     inC = 128; filterWidth = 2;
     grid = dim3((W_out-1)/blockSize + 1, (H_out-1)/blockSize + 1, batchSize*inC);
-    measureKernelTime([&](){
-        k_upsample_backward<<<grid, block>>>(d_grad_dec_ups1, d_grad_dec_conv3, H_out/2, W_out/2, H_out, W_out);
+    measureKernelTime([&]() {
+    k_upsample_backward<<<grid, block>>>(d_grad_dec_ups1, d_grad_dec_conv3, H_out/2, W_out/2, H_out, W_out);
     }, pool_backward_time, "UpSample Backward");
-    
     
     // dec_conv3 backward - 8x8x128
     H_out = 8; W_out = 8; outC = 128; inC = 128; filterWidth = 3;
-    measureKernelTime([&](){
-        k_relu_backward<<<(batchSize*outC*H_out*W_out-1)/256 + 1, 256>>>(d_dec_conv3, d_grad_dec_conv3, d_grad_dec_conv3, batchSize*outC*H_out*W_out);
+    measureKernelTime([&]() {
+    k_relu_backward<<<(batchSize*outC*H_out*W_out-1)/256 + 1, 256>>>(d_dec_conv3, d_grad_dec_conv3, d_grad_dec_conv3, batchSize*outC*H_out*W_out);
     }, relu_backward_time, "ReLU Backward");
 
     grid = dim3((W_out-1)/blockSize + 1, (H_out-1)/blockSize + 1, batchSize*outC);
-    measureKernelTime([&](){
-        k_conv2d_backward_weights_smem<<<grid, block, sharedMemSize>>>(d_latent, d_grad_dec_conv3, d_dw_dec_conv3, d_db_dec_conv3, inC, outC, H_out, W_out, filterWidth, padding, stride);
+    measureKernelTime([&]() {
+    k_conv2d_backward_weights<<<grid, block>>>(d_latent, d_grad_dec_conv3, d_dw_dec_conv3, d_db_dec_conv3, inC, outC, H_out, W_out, filterWidth, padding, stride);
     }, conv_backward_time, "Conv2D Backward Weights");
-    CHECK(cudaGetLastError());
-
+    
     grid = dim3((W_out-1)/blockSize + 1, (H_out-1)/blockSize + 1, batchSize*inC);
-    measureKernelTime([&](){
-        k_conv2d_backward_input_smem<<<grid, block, sharedMemSize>>>(d_grad_dec_conv3, d_w_dec_conv3, d_grad_latent, inC, outC, H_out, W_out, filterWidth, padding, stride);
+    measureKernelTime([&]() {
+    k_conv2d_backward_input<<<grid, block>>>(d_grad_dec_conv3, d_w_dec_conv3, d_grad_latent, inC, outC, H_out, W_out, filterWidth, padding, stride);
     }, conv_backward_time, "Conv2D Backward Input");
-    CHECK(cudaGetLastError());
 
     // MaxPool backward to enc_conv2 - 16x16x128 
     inC = 128; filterWidth = 2;
     grid = dim3((W_out*2-1)/blockSize + 1, (H_out*2-1)/blockSize + 1, batchSize*inC);
-    measureKernelTime([&](){
-        k_maxpool_backward<<<grid, block>>>(d_enc_conv2, d_latent, d_grad_latent, d_grad_enc_conv2, H_out*2, W_out*2, H_out, W_out);
+    measureKernelTime([&]() {
+    k_maxpool_backward<<<grid, block>>>(d_enc_conv2, d_latent, d_grad_latent, d_grad_enc_conv2, H_out*2, W_out*2, H_out, W_out);
     }, pool_backward_time, "MaxPool Backward");
-
     // enc_conv2 backward - 16x16x128
     H_out = 16; W_out = 16; outC = 128; inC = 256; filterWidth = 3;
-    measureKernelTime([&](){
-        k_relu_backward<<<(batchSize*outC*H_out*W_out-1)/256 + 1, 256>>>(d_enc_conv2, d_grad_enc_conv2, d_grad_enc_conv2, batchSize*outC*H_out*W_out);
+    measureKernelTime([&]() {
+    k_relu_backward<<<(batchSize*outC*H_out*W_out-1)/256 + 1, 256>>>(d_enc_conv2, d_grad_enc_conv2, d_grad_enc_conv2, batchSize*outC*H_out*W_out);
     }, relu_backward_time, "ReLU Backward");
-
+    
     grid = dim3((W_out-1)/blockSize + 1, (H_out-1)/blockSize + 1, batchSize*outC);
-    measureKernelTime([&](){
-        k_conv2d_backward_weights_smem<<<grid, block, sharedMemSize>>>(d_enc_pool1, d_grad_enc_conv2, d_dw_enc_conv2, d_db_enc_conv2, inC, outC, H_out, W_out, filterWidth, padding, stride);
+    measureKernelTime([&]() {
+    k_conv2d_backward_weights<<<grid, block>>>(d_enc_pool1, d_grad_enc_conv2, d_dw_enc_conv2, d_db_enc_conv2, inC, outC, H_out, W_out, filterWidth, padding, stride);
     }, conv_backward_time, "Conv2D Backward Weights");
-    CHECK(cudaGetLastError());
-
+    
     grid = dim3((W_out-1)/blockSize + 1, (H_out-1)/blockSize + 1, batchSize*inC);
-    measureKernelTime([&](){
-        k_conv2d_backward_input_smem<<<grid, block, sharedMemSize>>>(d_grad_enc_conv2, d_w_enc_conv2, d_grad_enc_pool1, inC, outC, H_out, W_out, filterWidth, padding, stride);
+    measureKernelTime([&]() {
+    k_conv2d_backward_input<<<grid, block>>>(d_grad_enc_conv2, d_w_enc_conv2, d_grad_enc_pool1, inC, outC, H_out, W_out, filterWidth, padding, stride);
     }, conv_backward_time, "Conv2D Backward Input");
-    CHECK(cudaGetLastError());
-
     // MaxPool backward to enc_conv1 - 32x32x256
     inC = 256; filterWidth = 2;
     grid = dim3((W_out*2-1)/blockSize + 1, (H_out*2-1)/blockSize + 1, batchSize*inC);
-    measureKernelTime([&](){
-        k_maxpool_backward<<<grid, block>>>(d_enc_conv1, d_enc_pool1, d_grad_enc_pool1, d_grad_enc_conv1, H_out*2, W_out*2, H_out, W_out);
+    measureKernelTime([&]() {
+    k_maxpool_backward<<<grid, block>>>(d_enc_conv1, d_enc_pool1, d_grad_enc_pool1, d_grad_enc_conv1, H_out*2, W_out*2, H_out, W_out);
     }, pool_backward_time, "MaxPool Backward");
-    
     // enc_conv1 backward - 32x32x256
     H_out = 32; W_out = 32; outC = 256; inC = 3; filterWidth = 3;
-    measureKernelTime([&](){
-        k_relu_backward<<<(batchSize*outC*H_out*W_out-1)/256 + 1, 256>>>(d_enc_conv1, d_grad_enc_conv1, d_grad_enc_conv1, batchSize*outC*H_out*W_out);
+    measureKernelTime([&]() {
+    k_relu_backward<<<(batchSize*outC*H_out*W_out-1)/256 + 1, 256>>>(d_enc_conv1, d_grad_enc_conv1, d_grad_enc_conv1, batchSize*outC*H_out*W_out);
     }, relu_backward_time, "ReLU Backward");
 
     grid = dim3((W_out-1)/blockSize + 1, (H_out-1)/blockSize + 1, batchSize*outC);
-    measureKernelTime([&](){
-        k_conv2d_backward_weights_smem<<<grid, block, sharedMemSize>>>(d_input, d_grad_enc_conv1, d_dw_enc_conv1, d_db_enc_conv1, inC, outC, H_out, W_out, filterWidth, padding, stride);
+    measureKernelTime([&]() {
+    k_conv2d_backward_weights<<<grid, block>>>(d_input, d_grad_enc_conv1, d_dw_enc_conv1, d_db_enc_conv1, inC, outC, H_out, W_out, filterWidth, padding, stride);
     }, conv_backward_time, "Conv2D Backward Weights");
-    CHECK(cudaGetLastError());
+    
     // No need backward input for the very first layer
 }
+
+
 
 void GPUAutoencoder::updateWeights() {
     int blockSize = 256;
@@ -1071,7 +1049,7 @@ void GPUAutoencoder::save_weights(const std::string& filepath) {
 GPUAutoencoder::~GPUAutoencoder() {
     
     
-    allocated = false;
+
     CHECK(cudaFree(d_input)); CHECK(cudaFree(d_enc_conv1)); CHECK(cudaFree(d_enc_pool1)); CHECK(cudaFree(d_enc_conv2)); CHECK(cudaFree(d_latent));
     CHECK(cudaFree(d_dec_conv3)); CHECK(cudaFree(d_dec_ups1)); CHECK(cudaFree(d_dec_conv4)); CHECK(cudaFree(d_dec_ups2)); CHECK(cudaFree(d_output));
 
