@@ -17,13 +17,11 @@ Setup:
 + epoch = 1
 + blocksize = 32
 ```
-Ground truth loss (dùng để so sánh để xem kết quả có bị thay đổi không):
-
-Processing batch 10/313 (samples 288 to 319)|   Single batch Loss: 0.297234
-Processing batch 20/313 (samples 608 to 639)|   Single batch Loss: 0.229707
-Processing batch 30/313 (samples 928 to 959)|   Single batch Loss: 0.229481
-Processing batch 40/313 (samples 1248 to 1279)|   Single batch Loss: 0.215662
-Processing batch 50/313 (samples 1568 to 1599)|   Single batch Loss: 0.202848
+Starting training batches...
+Processing batch 10/313 (samples 288 to 319)|   Single batch Loss: 0.296708
+Processing batch 20/313 (samples 608 to 639)|   Single batch Loss: 0.228136
+Processing batch 30/313 (samples 928 to 959)|   Single batch Loss: 0.226500
+Processing batch 40/313 (samples 1248 to 1279)|   Single batch Loss: 0.211472
 ```
 #### Cập nhật 10/12:
 Đã fix bug. 2 bộ weights của cpu và gpu đã giống nhau sau vài lần backprop
