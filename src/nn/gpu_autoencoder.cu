@@ -663,6 +663,91 @@ __global__ void k_conv2d_backward_weights_smem(float* input, float* d_output, fl
     
 }
 
+
+__global__ void k_conv2d_backward_weights_reduction(double* input, double* d_output, double* d_weights,
+                                          int inC, int outC, int H, int W, int K, int padding, int stride, int batchSize) {
+    
+    extern __shared__ float sdata[];                                        
+
+    int oc = blockIdx.x;
+    int ic = blockIdx.y;
+    int kh = blockIdx.z / K;
+    int kw = blockIdx.z % K;
+
+    int w_idx = ((oc * inC + ic)* K + kh) * K + kw;
+
+    float sum = 0.0;
+
+    int total_pixels = batchSize * H * W;
+    
+    for(int tid = threadIdx.x; tid < total_pixels; tid += blockDim.x){
+        int b = tid / (H*W);
+        int oh = tid % (H*W) / W;
+        int ow = tid % (H*W) % W;
+
+        int ih = oh * stride + kh - padding;
+        int iw = ow * stride + kw - padding;
+        if (oh >= 0 && oh < H && ow >= 0 && ow < W
+            && ih >= 0 && ih < H && iw >= 0 && iw < W){
+            int in_idx = ((b * inC + ic) * H + ih) * W + iw;
+            int out_idx = ((b * outC + oc) * H + oh) * W + ow;
+
+            sum += input[in_idx] * d_output[out_idx];
+        }
+    }
+    sdata[threadIdx.x] = sum;
+    __syncthreads();
+
+    for (int s = blockDim.x / 2; s > 0; s /= 2) {
+        if (threadIdx.x < s) {
+            sdata[threadIdx.x] += sdata[threadIdx.x + s];
+            // sdata[threadIdx.x + total_pixels] += sdata[threadIdx.x + total_pixels + s];
+        }
+        __syncthreads();
+    }
+    
+    if (threadIdx.x == 0) {
+        d_weights[w_idx] = sdata[0];
+    }
+}
+
+__global__ void k_conv2d_backward_bias_reduction(double* input, double* d_output, double* d_bias,
+                                          int inC, int outC, int H, int W, int K, int padding, int stride, int batchSize){
+
+    extern __shared__ float sdata[];
+    
+    int oc = blockIdx.x;
+    int ic = blockIdx.y;
+    int kh = blockIdx.z / K;
+    int kw = blockIdx.z % K;
+
+    double sum = 0.0;
+    int total_pixels = H * W * batchSize;
+
+    for(int tid = threadIdx.x; tid <= total_pixels; tid += blockDim.x){
+        int b = tid % (H*W);
+        int oh = tid % (H*W) / W;
+        int ow = tid % (H*W) % W;
+
+        int out_idx = ((b * outC + oc) * H + oh) * W + ow;
+        if (oh >= 0 && oh < H && ow >= 0 && ow < W
+            && ih >= 0 && ih < H && iw >= 0 && iw < W)
+            sum += d_output[out_idx];
+    }
+
+    __syncthreads();
+
+    for (int s = blockDim.x; s>0; s/=2){
+        if (tid < s){
+            sdata[threadIdx.x] += sdata[threadIdx.x + s];
+        }
+    }
+
+    if (threadIdx.x == 0)
+        d_bias[oc] = sdata[0]; 
+}
+
+
 __global__ void apply_update(float* weights, float* d_weights, float* velocity, 
                                  float lr, float momentum, int size) {
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
@@ -815,6 +900,7 @@ void GPUAutoencoder::train_batch(const std::vector<float>& h_inputBatch, int bat
     
     CHECK(cudaMemcpy(&m_loss, d_loss, sizeof(float), cudaMemcpyDeviceToHost));
     
+    total_kernel_time = conv_forward_time + conv_backward_time + relu_forward_time + relu_backward_time + pool_forward_time + pool_backward_time;
 
     if (train) {
         backwardPass(batchSize);
@@ -904,16 +990,20 @@ void GPUAutoencoder::forwardPass(int batchSize){
 
 void GPUAutoencoder::backwardPass(int batchSize) {
     int blockSize = 32;
-    dim3 block(blockSize, blockSize);
+    dim3 block;
+    dim3 grid;
     
     // Output layer (dec_conv5) - 32x32x3
     int H_out = 32, W_out = 32, outC = 3, inC = 256;
     int filterWidth = 3, padding = 1, stride = 1;
-    dim3 grid((W_out-1)/blockSize + 1, (H_out-1)/blockSize + 1, batchSize*outC);
-    // size_t sharedMemSize = (blockSize + filterWidth - 1) * (blockSize + filterWidth - 1) * sizeof(float);
+    block = dim3(blockSize, blockSize);
+    grid = dim3((outC-1) / blockSize + 1, (inC-1)/blockSize + 1, filterWidth * filterWidth);
     measureKernelTime([&]() {  
-        k_conv2d_backward_weights<<<grid, block>>>(d_dec_ups2, d_grad_output, d_dw_dec_conv5, d_db_dec_conv5, inC, outC, H_out, W_out, filterWidth, padding, stride);
+        size_t sharedMemSize = batchSize * H_out * W_out * sizeof(float);
+        k_conv2d_backward_weights_reductions<<<grid, block, sharedMemSize>>>(d_dec_ups2, d_grad_output, d_dw_dec_conv5, inC, outC, H_out, W_out, filterWidth, padding, stride, batchSize);
+        k_conv2d_backward_bias_reductions<<<grid, block, sharedMemSize>>>(d_dec_ups2, d_grad_output, d_db_dec_conv5, inC, outC, H_out, W_out, filterWidth, padding, stride, batchSize);
     }, conv_backward_time, "Conv2D Backward Weights");
+    CHECK(cudaGetLastError());
 
     grid = dim3((W_out-1)/blockSize + 1, (H_out-1)/blockSize + 1, batchSize*inC);
     measureKernelTime([&]() {
@@ -931,9 +1021,11 @@ void GPUAutoencoder::backwardPass(int batchSize) {
     k_relu_backward<<<(batchSize*outC*H_out*W_out-1)/256 + 1, 256>>>(d_dec_conv4, d_grad_dec_conv4, d_grad_dec_conv4, batchSize*outC*H_out*W_out);
     }, relu_backward_time, "ReLU Backward");
     
-    grid = dim3((W_out-1)/blockSize + 1, (H_out-1)/blockSize + 1, batchSize*outC);
+    grid = dim3((outC-1)/blockSize + 1, (inC-1)/blockSize + 1, filterWidth * filterWidth);
     measureKernelTime([&]() {
-    k_conv2d_backward_weights<<<grid, block>>>(d_dec_ups1, d_grad_dec_conv4, d_dw_dec_conv4, d_db_dec_conv4, inC, outC, H_out, W_out, filterWidth, padding, stride);
+        size_t sharedMemSize = batchSize * H_out * W_out * sizeof(float);
+        k_conv2d_backward_weights_reduction<<<grid, block, sharedMemSize>>>(d_dec_ups1, d_grad_dec_conv4, d_dw_dec_conv4, inC, outC, H_out, W_out, filterWidth, padding, stride, batchSize);
+        k_conv2d_backward_bias_reduction<<<grid, block, sharedMemSize>>>(d_dec_ups1, d_grad_dec_conv4, d_db_dec_conv4, inC, outC, H_out, W_out, filterWidth, padding, stride, batchSize);
     }, conv_backward_time, "Conv2D Backward Weights");
 
     grid = dim3((W_out-1)/blockSize + 1, (H_out-1)/blockSize + 1, batchSize*inC);
@@ -954,9 +1046,11 @@ void GPUAutoencoder::backwardPass(int batchSize) {
     k_relu_backward<<<(batchSize*outC*H_out*W_out-1)/256 + 1, 256>>>(d_dec_conv3, d_grad_dec_conv3, d_grad_dec_conv3, batchSize*outC*H_out*W_out);
     }, relu_backward_time, "ReLU Backward");
 
-    grid = dim3((W_out-1)/blockSize + 1, (H_out-1)/blockSize + 1, batchSize*outC);
+    grid = dim3((outC-1)/blockSize + 1, (inC-1)/blockSize + 1, filterWidth * filterWidth);
     measureKernelTime([&]() {
-    k_conv2d_backward_weights<<<grid, block>>>(d_latent, d_grad_dec_conv3, d_dw_dec_conv3, d_db_dec_conv3, inC, outC, H_out, W_out, filterWidth, padding, stride);
+        size_t sharedMemSize = batchSize * H_out * W_out * sizeof(float);
+        k_conv2d_backward_weights_reduction<<<grid, block, sharedMemSize>>>(d_latent, d_grad_dec_conv3, d_dw_dec_conv3, inC, outC, H_out, W_out, filterWidth, padding, stride);
+        k_conv2d_backward_bias_reduction<<<grid, block, sharedMemSize>>>(d_latent, d_grad_dec_conv3, d_db_dec_conv3, inC, outC, H_out, W_out, filterWidth, padding, stride);
     }, conv_backward_time, "Conv2D Backward Weights");
     
     grid = dim3((W_out-1)/blockSize + 1, (H_out-1)/blockSize + 1, batchSize*inC);
@@ -976,11 +1070,13 @@ void GPUAutoencoder::backwardPass(int batchSize) {
     k_relu_backward<<<(batchSize*outC*H_out*W_out-1)/256 + 1, 256>>>(d_enc_conv2, d_grad_enc_conv2, d_grad_enc_conv2, batchSize*outC*H_out*W_out);
     }, relu_backward_time, "ReLU Backward");
     
-    grid = dim3((W_out-1)/blockSize + 1, (H_out-1)/blockSize + 1, batchSize*outC);
+    grid = dim3((outC-1)/blockSize + 1, (inC-1)/blockSize + 1, filterWidth * filterWidth);
     measureKernelTime([&]() {
-    k_conv2d_backward_weights<<<grid, block>>>(d_enc_pool1, d_grad_enc_conv2, d_dw_enc_conv2, d_db_enc_conv2, inC, outC, H_out, W_out, filterWidth, padding, stride);
+        size_t sharedMemSize = batchSize * H_out * W_out * sizeof(float);
+        k_conv2d_backward_weights_reduction<<<grid, block, sharedMemSize>>>(d_enc_pool1, d_grad_enc_conv2, d_dw_enc_conv2, inC, outC, H_out, W_out, filterWidth, padding, stride, batchSize);
+        k_conv2d_backward_bias_reduction<<<grid, block, sharedMemSize>>>(d_enc_pool1, d_grad_enc_conv2, d_db_enc_conv2, inC, outC, H_out, W_out, filterWidth, padding, stride, batchSize);
     }, conv_backward_time, "Conv2D Backward Weights");
-    
+
     grid = dim3((W_out-1)/blockSize + 1, (H_out-1)/blockSize + 1, batchSize*inC);
     measureKernelTime([&]() {
     k_conv2d_backward_input<<<grid, block>>>(d_grad_enc_conv2, d_w_enc_conv2, d_grad_enc_pool1, inC, outC, H_out, W_out, filterWidth, padding, stride);
@@ -997,9 +1093,11 @@ void GPUAutoencoder::backwardPass(int batchSize) {
     k_relu_backward<<<(batchSize*outC*H_out*W_out-1)/256 + 1, 256>>>(d_enc_conv1, d_grad_enc_conv1, d_grad_enc_conv1, batchSize*outC*H_out*W_out);
     }, relu_backward_time, "ReLU Backward");
 
-    grid = dim3((W_out-1)/blockSize + 1, (H_out-1)/blockSize + 1, batchSize*outC);
+    grid = dim3((outC-1)/blockSize + 1, (inC-1)/blockSize + 1, filterWidth * filterWidth);
     measureKernelTime([&]() {
-    k_conv2d_backward_weights<<<grid, block>>>(d_input, d_grad_enc_conv1, d_dw_enc_conv1, d_db_enc_conv1, inC, outC, H_out, W_out, filterWidth, padding, stride);
+        size_t sharedMemSize = batchSize * H_out * W_out * sizeof(float);
+        k_conv2d_backward_weights_reduction<<<grid, block, sharedMemSize>>>(d_input, d_grad_enc_conv1, d_dw_enc_conv1, inC, outC, H_out, W_out, filterWidth, padding, stride, batchSize);
+        k_conv2d_backward_bias_reduction<<<grid, block, sharedMemSize>>>(d_input, d_grad_enc_conv1, d_db_enc_conv1, inC, outC, H_out, W_out, filterWidth, padding, stride, batchSize);
     }, conv_backward_time, "Conv2D Backward Weights");
     
     // No need backward input for the very first layer
