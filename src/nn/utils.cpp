@@ -4,42 +4,42 @@
 
 namespace nn {
 
-	double *random(size_t elementSize) {
-		double *result = new double[elementSize];
+	float *random(size_t elementSize) {
+		float *result = new float[elementSize];
 		for (size_t i = 0; i < elementSize; i++) {
-			result[i] = ((double)rand() / (RAND_MAX));
+			result[i] = ((float)rand() / (RAND_MAX));
 			// result[i] = -1 + 2 * ((float)rand()) / RAND_MAX;
 		}
 		return result;
 	}
 
-	double *randomGaussian(size_t elementSize, double mean, double sigma) {
+	float *randomGaussian(size_t elementSize, float mean, float sigma) {
 		std::default_random_engine generator;
-		std::normal_distribution<double> distribution(mean, sigma);
-		double *result = new double[elementSize];
+		std::normal_distribution<float> distribution(mean, sigma);
+		float *result = new float[elementSize];
 		for (size_t i = 0; i < elementSize; i++) {
 			result[i] = distribution(generator);
 		}
 		return result;
 	}
 
-	double squareError(double d1, double d2) {
+	float squareError(float d1, float d2) {
 		return pow((d1 - d2), 2);
 	}
 
-	double sigmoid(double d) {
+	float sigmoid(float d) {
 		return 1.0 / (1.0 + exp(-d));
 	}
 
-	double sigmoidDerivation(double d) {
+	float sigmoidDerivation(float d) {
 		return d * (1.0 - d);
 	}
 
-	double relu(double d) {
+	float relu(float d) {
 		return std::fmax(0, d);
 	}
 
-	double reluDerivation(double d) {
+	float reluDerivation(float d) {
 		return d >= 0.0 ? 0.0 : 1.0;
 	}
 };

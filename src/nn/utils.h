@@ -2,16 +2,16 @@
 
 namespace nn {
 
-	double *random(size_t elementSize);
+	float *random(size_t elementSize);
 
-	double squareError(double d1, double d2);
+	float squareError(float d1, float d2);
 
-	double sigmoid(double d);
+	float sigmoid(float d);
 
-	double sigmoidDerivation(double d);
+	float sigmoidDerivation(float d);
 
-	double relu(double d);
+	float relu(float d);
 
-	double reluDerivation(double d);
+	float reluDerivation(float d);
 };
 

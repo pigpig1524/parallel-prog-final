@@ -8,7 +8,7 @@
 #include <algorithm>
 
 
-std::vector<std::pair<int, std::vector<double>>> readBinaryFile(const std::string& filepath) {
+std::vector<std::pair<int, std::vector<float>>> readBinaryFile(const std::string& filepath) {
     std::ifstream file(filepath, std::ios::binary);
     if (!file.is_open()) {
         throw std::runtime_error("Cannot open file: " + filepath);
@@ -28,7 +28,7 @@ std::vector<std::pair<int, std::vector<double>>> readBinaryFile(const std::strin
     }
     
     int numImages = fileSize / RECORD_SIZE;
-    std::vector<std::pair<int, std::vector<double>>> imageData;
+    std::vector<std::pair<int, std::vector<float>>> imageData;
     imageData.reserve(numImages);
     
     for (int i = 0; i < numImages; i++) {
@@ -44,11 +44,11 @@ std::vector<std::pair<int, std::vector<double>>> readBinaryFile(const std::strin
             throw std::runtime_error("Error reading image " + std::to_string(i) + " from file: " + filepath);
         }
         
-        // Convert unsigned char (0-255) to double (0.0-1.0) for GPU
-        std::vector<double> pixels;
+        // Convert unsigned char (0-255) to float (0.0-1.0) for GPU
+        std::vector<float> pixels;
         pixels.reserve(IMAGE_SIZE);
         for (unsigned char pixel : pixelBytes) {
-            pixels.push_back(static_cast<double>(pixel) / 255.0f);
+            pixels.push_back(static_cast<float>(pixel) / 255.0f);
         }
         
         // Add to result as pair<label, pixels>
@@ -59,8 +59,8 @@ std::vector<std::pair<int, std::vector<double>>> readBinaryFile(const std::strin
 }
 
 // Hàm đọc tất cả file .bin trong folder và load vào train_data
-std::vector<std::vector<double>> loadTrainData(const std::string& folderPath) {
-    std::vector<std::vector<double>> train_data;
+std::vector<std::vector<float>> loadTrainData(const std::string& folderPath) {
+    std::vector<std::vector<float>> train_data;
     
     try {
         // Kiểm tra folder có tồn tại không
@@ -115,7 +115,7 @@ int main() {
     std::cout << "Looking for data at: " << std::filesystem::absolute(dataFolder) << std::endl;
     // Load dữ liệu training
     std::cout << "Loading training data..." << std::endl;
-    std::vector<std::vector<double>> train_data = loadTrainData(dataFolder);
+    std::vector<std::vector<float>> train_data = loadTrainData(dataFolder);
     std::cout << "Loaded " << train_data.size() << " samples" << std::endl;
     
     if (train_data.empty()) {
@@ -124,9 +124,9 @@ int main() {
     }
     int EPOCHS = 1;
     int BATCH_SIZE = 3;
-    double LR = 0.001;
-    double MOMENTUM = 0.9;
-    double total_epoch_loss = 0;
+    float LR = 0.001;
+    float MOMENTUM = 0.9;
+    float total_epoch_loss = 0;
     int total_samples = train_data.size();
     int total_batches = (total_samples + BATCH_SIZE - 1) / BATCH_SIZE; // Round up division
 
@@ -140,7 +140,7 @@ int main() {
     ae.load_weights("../weights/test_weights.bin");
     int ok = 0;
     for (int epoch = 0; epoch < EPOCHS; ++epoch) {
-        double epoch_loss = 0.0f;
+        float epoch_loss = 0.0f;
         int processed_batches = 0;
         
         std::cout << "\n=== Epoch " << (epoch + 1) << "/" << EPOCHS << " ===" << std::endl;
@@ -177,7 +177,7 @@ int main() {
 
 
         // Calculate epoch statistics
-        double avg_epoch_loss = epoch_loss / processed_batches;
+        float avg_epoch_loss = epoch_loss / processed_batches;
         
         std::cout << "\n--- Epoch " << (epoch + 1) << " Summary ---" << std::endl;
         std::cout << "Batches processed: " << processed_batches << std::endl;

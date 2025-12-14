@@ -55,5 +55,26 @@ Pooling Time: 806.99 ms||| Ratio: 0.37%
 - Giữ lại kernel không tối ưu: `k_conv2d_backward_input`, `k_conv2d_backward_weights`
 - Rename các kernel smem: `k_conv2d_backward_input_smem`, `k_conv2d_backward_weights_smem`
 
+#### Cập nhật tối 12/12:
+- Chuyển `double` sang `float`
+- Fuse forward kernel Convolution + ReLU
+- Chuyển sang dùng `const float* __restrict__` cho các input không thay đổi
+
+```plain
+--- Epoch 1 Summary ---
+Batches processed: 313
+Average train loss: 0.112708
+Average test loss: 0.062981
+Epoch train time: 196.31 seconds
+Inference time: 17.94 seconds
+
+=== Time summary ===
+Total Kernel Time: 0.00 ms
+Convolution Forward Time: 16857.58 ms||| Ratio: inf%
+Convolution Backward Time: 178450.22 ms||| Ratio: inf%
+Convolution Time: 195307.80 ms||| Ratio: inf%
+ReLU Time: 157.13 ms||| Ratio: inf%
+Pooling Time: 522.18 ms||| Ratio: inf%
+```
 
 

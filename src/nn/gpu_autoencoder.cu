@@ -8,7 +8,7 @@
 // ================= CUDA KERNELS (NAIVE & REDUCTION) =================
 
 template<typename Func>
-void GPUAutoencoder::measureKernelTime(Func&& kernelFunc, double& timeVariable, const char* kernelName) {
+void GPUAutoencoder::measureKernelTime(Func&& kernelFunc, float& timeVariable, const char* kernelName) {
     if (train == false) {
         kernelFunc();
         return;
@@ -44,9 +44,22 @@ void GPUAutoencoder::measureKernelTime(Func&& kernelFunc, double& timeVariable, 
     CHECK(cudaEventDestroy(stop));
 }
 
+// Giả sử max outC = 256
+__constant__ float c_bias[256];
+
+// Giả sử conv nhỏ: outC * inC * K * K <= ~16KB
+__constant__ float c_weights[16384]; 
+
+
 // --- FORWARD ---
-__global__ void k_conv2d_forward(double* input, double* weights, double* bias, double* output,
-                                 int inC, int outC, int H, int W, int K, int padding, int stride) {
+__global__ void k_conv2d_forward(
+    const float* __restrict__ input,
+    const float* __restrict__ weights,
+    const float* __restrict__ bias,
+    int inC, int outC,
+    int H, int W,
+    int K, int padding, int stride
+) {
     int ow = blockIdx.x * blockDim.x + threadIdx.x;
     int oh = blockIdx.y * blockDim.y + threadIdx.y;
     int b_oc = blockIdx.z;
@@ -56,7 +69,7 @@ __global__ void k_conv2d_forward(double* input, double* weights, double* bias, d
     int oc = b_oc % outC;
     int b = b_oc / outC;
 
-    double sum = bias[oc];
+    float sum = bias[oc];
 
     for (int ic = 0; ic < inC; ++ic) {
         for (int kh = 0; kh < K; ++kh) {
@@ -78,8 +91,49 @@ __global__ void k_conv2d_forward(double* input, double* weights, double* bias, d
     output[out_idx] = sum;
 }
 
+// Fuse Forward Conv
+__global__ void k_conv2d_forward_fuse(
+    const float* __restrict__ input,
+    const float* __restrict__ weights,
+    const float* __restrict__ bias,
+    float* output,
+    int inC, int outC,
+    int H, int W,
+    int K, int padding, int stride
+) {
+    int ow = blockIdx.x * blockDim.x + threadIdx.x;
+    int oh = blockIdx.y * blockDim.y + threadIdx.y;
+    int b_oc = blockIdx.z;
+
+    if (ow >= W || oh >= H) return;
+
+    int oc = b_oc % outC;
+    int b = b_oc / outC;
+
+    float sum = bias[oc];
+
+    for (int ic = 0; ic < inC; ++ic) {
+        for (int kh = 0; kh < K; ++kh) {
+            for (int kw = 0; kw < K; ++kw) {
+                int ih = oh * stride + kh - padding;
+                int iw = ow * stride + kw - padding;
+                ih = max(min(ih, H - 1), 0);
+                iw = max(min(iw, W - 1), 0);
+                // Tính flat index dựa vào batch, in_Channel, H và W
+                int in_idx = ((b * inC + ic) * H + ih) * W + iw;
+                int w_idx = ((oc * inC + ic) * K + kh) * K + kw;
+                sum += input[in_idx] * weights[w_idx];
+                
+            }
+        }
+    }
+
+    int out_idx = ((b * outC + oc) * H + oh) * W + ow;
+    output[out_idx] = fmaxf(0.0f, sum); // ReLU activation
+}
+
 // Kernel Forward ReLU
-__global__ void k_relu_forward(double* data, int size) {
+__global__ void k_relu_forward(float* data, int size) {
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
     if (idx < size) {
         if (data[idx] < 0) data[idx] = 0;
@@ -87,7 +141,13 @@ __global__ void k_relu_forward(double* data, int size) {
 }
 
 // Kernel Forward MaxPool
-__global__ void k_maxpool_forward(double* input, double* output, int C, int inH, int inW, int outH, int outW) {
+__global__ void k_maxpool_forward(
+    const float* __restrict__ input,
+    float* output,
+    int C,
+    int inH, int inW,
+    int outH, int outW
+) {
     int ow = blockIdx.x * blockDim.x + threadIdx.x;
     int oh = blockIdx.y * blockDim.y + threadIdx.y;
     int bc = blockIdx.z;
@@ -98,7 +158,7 @@ __global__ void k_maxpool_forward(double* input, double* output, int C, int inH,
     int ih_start = oh * K;
     int iw_start = ow * K;
 
-    double max_val = -1e30;
+    float max_val = -1e30;
 
     for (int kh = 0; kh < K; ++kh) {
         for (int kw = 0; kw < K; ++kw) {
@@ -108,7 +168,7 @@ __global__ void k_maxpool_forward(double* input, double* output, int C, int inH,
             ww = max(min(ww, inW - 1), 0);
 
             int idx = (bc * inH + hh) * inW + ww;
-            double val = input[idx];
+            float val = input[idx];
             if (val > max_val) max_val = val;
         }
     }
@@ -117,7 +177,13 @@ __global__ void k_maxpool_forward(double* input, double* output, int C, int inH,
 }
 
 // Kernel Forward UpSample
-__global__ void k_upsample_forward(double* input, double* output, int C, int inH, int inW, int outH, int outW) {
+__global__ void k_upsample_forward(
+    const float* __restrict__ input,
+    float* output,
+    int C,
+    int inH, int inW,
+    int outH, int outW
+) {
     int ow = blockIdx.x * blockDim.x + threadIdx.x;
     int oh = blockIdx.y * blockDim.y + threadIdx.y;
     int bc = blockIdx.z;
@@ -136,19 +202,19 @@ __global__ void k_upsample_forward(double* input, double* output, int C, int inH
 
 // --- UPDATED: MSE Loss Kernel with SHARED MEMORY Reduction ---
 // Requirement 2.2: Use shared memory for partial sums
-__global__ void k_mse_loss_backward_input(double* predicted, double* target, double* d_grad, double* loss_val, int size) {
+__global__ void k_mse_loss_backward_input(float* predicted, float* target, float* d_grad, float* loss_val, int size) {
     // Shared memory để lưu tổng cục bộ của block
-    extern __shared__ double sdata[];
+    extern __shared__ float sdata[];
     
     int tid = threadIdx.x;
     int idx = blockIdx.x * blockDim.x + tid;
     
-    double sq_diff = 0.0f;
-    double grad_abs = 0.0f;
+    float sq_diff = 0.0f;
+    float grad_abs = 0.0f;
     
     // 1. Tính toán diff và gradient cho pixel-wise, đồng thời tính squared error
     if (idx < size) {
-        double diff = - target[idx] + predicted[idx];
+        float diff = - target[idx] + predicted[idx];
         d_grad[idx] = 2.0f * diff / size; // Gradient: dL/dOutput
         sq_diff = diff * diff / size; // Chia cho tổng số elements để có MSE
         grad_abs = fabs(d_grad[idx]);
@@ -175,14 +241,14 @@ __global__ void k_mse_loss_backward_input(double* predicted, double* target, dou
 
 // --- BACKWARD ---
 
-__global__ void k_relu_backward(double* input_val, double* d_output, double* d_input, int size) {
+__global__ void k_relu_backward(float* input_val, float* d_output, float* d_input, int size) {
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
     if (idx < size) {
         d_input[idx] = (input_val[idx] > 0) ? d_output[idx] : 0.0f;
     }
 }
 
-__global__ void k_maxpool_backward(double* input, double* output, double* d_output, double* d_input, 
+__global__ void k_maxpool_backward(float* input, float* output, float* d_output, float* d_input, 
                                    int inH, int inW, int outH, int outW) {
     int ow = blockIdx.x * blockDim.x + threadIdx.x;
     int oh = blockIdx.y * blockDim.y + threadIdx.y;
@@ -191,8 +257,8 @@ __global__ void k_maxpool_backward(double* input, double* output, double* d_outp
     if (ow >= outW || oh >= outH) return;
 
     int out_idx = (bc * outH + oh) * outW + ow;
-    double max_val = output[out_idx];
-    double d_val = d_output[out_idx];
+    float max_val = output[out_idx];
+    float d_val = d_output[out_idx];
 
     int ih_start = oh * 2;
     int iw_start = ow * 2;
@@ -209,14 +275,14 @@ __global__ void k_maxpool_backward(double* input, double* output, double* d_outp
     }
 }
 
-__global__ void k_upsample_backward(double* d_output, double* d_input, int inH, int inW, int outH, int outW) {
+__global__ void k_upsample_backward(float* d_output, float* d_input, int inH, int inW, int outH, int outW) {
     int iw = blockIdx.x * blockDim.x + threadIdx.x;
     int ih = blockIdx.y * blockDim.y + threadIdx.y;
     int bc = blockIdx.z;
 
     if (iw >= inW || ih >= inH) return;
 
-    double sum = 0.0f;
+    float sum = 0.0f;
     int oh_start = ih * 2;
     int ow_start = iw * 2;
 
@@ -230,7 +296,7 @@ __global__ void k_upsample_backward(double* d_output, double* d_input, int inH, 
     d_input[in_idx] = sum;
 }
 
-__global__ void k_conv2d_backward_input(double* d_output, double* weights, double* d_input,
+__global__ void k_conv2d_backward_input(float* d_output, float* weights, float* d_input,
                                         int inC, int outC, int H, int W, int K, int padding, int stride) {
     int iw = blockIdx.x * blockDim.x + threadIdx.x;
     int ih = blockIdx.y * blockDim.y + threadIdx.y;
@@ -240,7 +306,7 @@ __global__ void k_conv2d_backward_input(double* d_output, double* weights, doubl
 
     int ic = b_ic % inC;
     int b = b_ic / inC;
-    double sum = 0.0f;
+    float sum = 0.0f;
 
     for(int oc=0; oc<outC; ++oc) {
         for(int kh=0; kh<K; ++kh) {
@@ -263,7 +329,7 @@ __global__ void k_conv2d_backward_input(double* d_output, double* weights, doubl
     d_input[din_idx] = sum;
 }
 
-__global__ void k_conv2d_backward_weights(double* input, double* d_output, double* d_weights, double* d_bias,
+__global__ void k_conv2d_backward_weights(float* input, float* d_output, float* d_weights, float* d_bias,
                                           int inC, int outC, int H, int W, int K, int padding, int stride) {
     int ow = blockIdx.x * blockDim.x + threadIdx.x;
     int oh = blockIdx.y * blockDim.y + threadIdx.y;
@@ -275,7 +341,7 @@ __global__ void k_conv2d_backward_weights(double* input, double* d_output, doubl
     int b = b_oc / outC;
     
     int dout_idx = ((b * outC + oc) * H + oh) * W + ow;
-    double d_val = d_output[dout_idx];
+    float d_val = d_output[dout_idx];
 
     atomicAdd(&d_bias[oc], d_val);
 
@@ -287,7 +353,7 @@ __global__ void k_conv2d_backward_weights(double* input, double* d_output, doubl
 
                 if (ih >= 0 && ih < H && iw >= 0 && iw < W) {
                     int in_idx = ((b * inC + ic) * H + ih) * W + iw;
-                    double val = input[in_idx];
+                    float val = input[in_idx];
                     int w_idx = ((oc * inC + ic) * K + kh) * K + kw;
                     atomicAdd(&d_weights[w_idx], val * d_val);
                 }
@@ -296,17 +362,17 @@ __global__ void k_conv2d_backward_weights(double* input, double* d_output, doubl
     }
 }
 
-__global__ void k_conv2d_backward_input_smem(double* d_output, double* weights, double* d_input,
+__global__ void k_conv2d_backward_input_smem(float* d_output, float* weights, float* d_input,
                                         int inC, int outC, int H, int W, int K, int padding, int stride) {
     int iw = blockIdx.x * blockDim.x + threadIdx.x;
     int ih = blockIdx.y * blockDim.y + threadIdx.y;
     int b_ic = blockIdx.z;
 
     if (iw >= W || ih >= H) return;
-    extern __shared__ double s_input[];
+    extern __shared__ float s_input[];
     int ic = b_ic % inC;
     int b = b_ic / inC;
-    double sum = 0.0f;
+    float sum = 0.0f;
 
     int tid_x = threadIdx.x, tid_y = threadIdx.y;
     // Load input tile into shared memory
@@ -433,7 +499,7 @@ __global__ void k_conv2d_backward_input_smem(double* d_output, double* weights, 
 
                 if (oh >= 0 && oh < H && ow >= 0 && ow < W) {
                     // int in_idx = ((b * inC + ic) * H + ih) * W + iw;
-                    // double val = input[in_idx];
+                    // float val = input[in_idx];
                     int w_idx = ((oc * inC + ic) * K + kh) * K + kw;
                     sum += weights[w_idx] * s_input[(tid_y + kh) * s_width + (tid_x + kw)];
                 }
@@ -445,18 +511,18 @@ __global__ void k_conv2d_backward_input_smem(double* d_output, double* weights, 
     d_input[din_idx] = sum;
 }
 
-__global__ void k_conv2d_backward_weights_smem(double* input, double* d_output, double* d_weights, double* d_bias,
+__global__ void k_conv2d_backward_weights_smem(float* input, float* d_output, float* d_weights, float* d_bias,
                                           int inC, int outC, int H, int W, int K, int padding, int stride) {
     int ow = blockIdx.x * blockDim.x + threadIdx.x;
     int oh = blockIdx.y * blockDim.y + threadIdx.y;
     int b_oc = blockIdx.z;
-    extern __shared__ double s_input[]; // Sử dụng shared memory nếu cần
+    extern __shared__ float s_input[]; // Sử dụng shared memory nếu cần
     if (ow >= W || oh >= H) return;
     int oc = b_oc % outC;
     int b = b_oc / outC;
     
     int dout_idx = ((b * outC + oc) * H + oh) * W + ow;
-    double d_val = d_output[dout_idx];
+    float d_val = d_output[dout_idx];
 
     atomicAdd(&d_bias[oc], d_val);
 
@@ -585,7 +651,7 @@ __global__ void k_conv2d_backward_weights_smem(double* input, double* d_output, 
 
                 if (ih >= 0 && ih < H && iw >= 0 && iw < W) {
                     // int in_idx = ((b * inC + ic) * H + ih) * W + iw;
-                    // double val = input[in_idx];
+                    // float val = input[in_idx];
                     int w_idx = ((oc * inC + ic) * K + kh) * K + kw;
                     int s_idx = (tid_y + kh) * s_width + (tid_x + kw);
                     atomicAdd(&d_weights[w_idx], s_input[s_idx] * d_val);
@@ -597,17 +663,17 @@ __global__ void k_conv2d_backward_weights_smem(double* input, double* d_output, 
     
 }
 
-__global__ void apply_update(double* weights, double* d_weights, double* velocity, 
-                                 double lr, double momentum, int size) {
+__global__ void apply_update(float* weights, float* d_weights, float* velocity, 
+                                 float lr, float momentum, int size) {
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
     if (idx < size) {
-        double grad = d_weights[idx]; 
+        float grad = d_weights[idx]; 
         
-        const double grad_clip = 5.0;
+        const float grad_clip = 5.0;
         if (grad > grad_clip) grad = grad_clip;
         else if (grad < -grad_clip) grad = -grad_clip;
 
-        double v = momentum * velocity[idx] - lr * grad;
+        float v = momentum * velocity[idx] - lr * grad;
         velocity[idx] = v;
         weights[idx] += v;
         d_weights[idx] = 0.0f;
@@ -616,7 +682,7 @@ __global__ void apply_update(double* weights, double* d_weights, double* velocit
 
 // ================= CLASS IMPLEMENTATION =================
 
-GPUAutoencoder::GPUAutoencoder(double learningRate, double momentum) 
+GPUAutoencoder::GPUAutoencoder(float learningRate, float momentum) 
     : m_learningRate(learningRate), m_momentum(momentum),
       conv_forward_time(0.0), conv_backward_time(0.0), relu_forward_time(0.0), relu_backward_time(0.0),
       pool_forward_time(0.0), pool_backward_time(0.0), total_kernel_time(0.0)
@@ -625,40 +691,40 @@ GPUAutoencoder::GPUAutoencoder(double learningRate, double momentum)
     initWeightsRandomly();
 }
 
-void random_init(std::vector<double>& vec, int fan_in) {
+void random_init(std::vector<float>& vec, int fan_in) {
     // Xavier/Glorot initialization for better stability
-    double limit = sqrt(2.0f / (fan_in + vec.size()));
+    float limit = sqrt(2.0f / (fan_in + vec.size()));
     std::random_device rd;
     std::mt19937 generator(rd());
-    std::uniform_real_distribution<double> dist(-limit, limit);
-    for (double& val : vec) val = dist(generator);
+    std::uniform_real_distribution<float> dist(-limit, limit);
+    for (float& val : vec) val = dist(generator);
 }
 
 void GPUAutoencoder::initWeightsRandomly() {
     int K = 3;
-    auto init_layer = [&](double** d_w, double** d_b, double** d_dw, double** d_db, double** d_vw, double** d_vb, int outC, int inC) {
+    auto init_layer = [&](float** d_w, float** d_b, float** d_dw, float** d_db, float** d_vw, float** d_vb, int outC, int inC) {
         int w_size = outC * inC * K * K;
         int b_size = outC;
         
-        std::vector<double> h_w(w_size);
-        std::vector<double> h_b(b_size, 0.0f);
+        std::vector<float> h_w(w_size);
+        std::vector<float> h_b(b_size, 0.0f);
         
         random_init(h_w, inC * K * K);
 
-        CHECK(cudaMalloc(d_w, w_size * sizeof(double)));
-        CHECK(cudaMalloc(d_b, b_size * sizeof(double)));
-        CHECK(cudaMalloc(d_dw, w_size * sizeof(double)));
-        CHECK(cudaMalloc(d_db, b_size * sizeof(double)));
-        CHECK(cudaMalloc(d_vw, w_size * sizeof(double)));
-        CHECK(cudaMalloc(d_vb, b_size * sizeof(double)));
+        CHECK(cudaMalloc(d_w, w_size * sizeof(float)));
+        CHECK(cudaMalloc(d_b, b_size * sizeof(float)));
+        CHECK(cudaMalloc(d_dw, w_size * sizeof(float)));
+        CHECK(cudaMalloc(d_db, b_size * sizeof(float)));
+        CHECK(cudaMalloc(d_vw, w_size * sizeof(float)));
+        CHECK(cudaMalloc(d_vb, b_size * sizeof(float)));
 
-        CHECK(cudaMemcpy(*d_w, h_w.data(), w_size * sizeof(double), cudaMemcpyHostToDevice));
-        CHECK(cudaMemcpy(*d_b, h_b.data(), b_size * sizeof(double), cudaMemcpyHostToDevice));
+        CHECK(cudaMemcpy(*d_w, h_w.data(), w_size * sizeof(float), cudaMemcpyHostToDevice));
+        CHECK(cudaMemcpy(*d_b, h_b.data(), b_size * sizeof(float), cudaMemcpyHostToDevice));
         
-        CHECK(cudaMemset(*d_dw, 0, w_size * sizeof(double)));
-        CHECK(cudaMemset(*d_db, 0, b_size * sizeof(double)));
-        CHECK(cudaMemset(*d_vw, 0, w_size * sizeof(double)));
-        CHECK(cudaMemset(*d_vb, 0, b_size * sizeof(double)));
+        CHECK(cudaMemset(*d_dw, 0, w_size * sizeof(float)));
+        CHECK(cudaMemset(*d_db, 0, b_size * sizeof(float)));
+        CHECK(cudaMemset(*d_vw, 0, w_size * sizeof(float)));
+        CHECK(cudaMemset(*d_vb, 0, b_size * sizeof(float)));
     };
 
     init_layer(&d_w_enc_conv1, &d_b_enc_conv1, &d_dw_enc_conv1, &d_db_enc_conv1, &d_v_enc_conv1, &d_v_enc_conv1_b, 256, 3);
@@ -670,8 +736,8 @@ void GPUAutoencoder::initWeightsRandomly() {
 }
 
 void GPUAutoencoder::allocateMemory(int batchSize) {
-    auto malloc_tensor = [&](double** ptr, int c, int h, int w) {
-        CHECK(cudaMalloc(ptr, batchSize * c * h * w * sizeof(double)));
+    auto malloc_tensor = [&](float** ptr, int c, int h, int w) {
+        CHECK(cudaMalloc(ptr, batchSize * c * h * w * sizeof(float)));
     };
     allocated = true;
     //Khởi tạo bộ nhớ cho các tensor hiddenState và gradients
@@ -706,48 +772,48 @@ void GPUAutoencoder::get_weights_to_host() {
     std::cout << "Weights copy functionality is ready but requires Host buffers." << std::endl;
 }
 
-void GPUAutoencoder::getOutput(const std::vector<double>& h_inputBatch, std::vector<double>& h_output, int batchSize) {
+void GPUAutoencoder::getOutput(const std::vector<float>& h_inputBatch, std::vector<float>& h_output, int batchSize) {
     train_batch(h_inputBatch, batchSize);
     int size = batchSize * 3 * 32 * 32;
     h_output.resize(size);
-    CHECK(cudaMemcpy(h_output.data(), d_output, size * sizeof(double), cudaMemcpyDeviceToHost));
+    CHECK(cudaMemcpy(h_output.data(), d_output, size * sizeof(float), cudaMemcpyDeviceToHost));
 }
 
-void GPUAutoencoder::getLatent(const std::vector<double>& h_inputBatch, std::vector<double>& h_latent, int batchSize) {
+void GPUAutoencoder::getLatent(const std::vector<float>& h_inputBatch, std::vector<float>& h_latent, int batchSize) {
     if (! allocated)
         allocateMemory(batchSize);
     
-    CHECK(cudaMemcpy(d_input, h_inputBatch.data(), h_inputBatch.size() * sizeof(double), cudaMemcpyHostToDevice));
+    CHECK(cudaMemcpy(d_input, h_inputBatch.data(), h_inputBatch.size() * sizeof(float), cudaMemcpyHostToDevice));
 
     forwardPass(batchSize);
 
     int size = batchSize * 128 * 8 * 8;
     h_latent.resize(size);
-    CHECK(cudaMemcpy(h_latent.data(), d_latent, size * sizeof(double), cudaMemcpyDeviceToHost));
+    CHECK(cudaMemcpy(h_latent.data(), d_latent, size * sizeof(float), cudaMemcpyDeviceToHost));
 }
 
-void GPUAutoencoder::train_batch(const std::vector<double>& h_inputBatch, int batchSize) {
+void GPUAutoencoder::train_batch(const std::vector<float>& h_inputBatch, int batchSize) {
     if (! allocated)
         allocateMemory(batchSize);
 
-    CHECK(cudaMemcpy(d_input, h_inputBatch.data(), h_inputBatch.size() * sizeof(double), cudaMemcpyHostToDevice));
+    CHECK(cudaMemcpy(d_input, h_inputBatch.data(), h_inputBatch.size() * sizeof(float), cudaMemcpyHostToDevice));
 
     forwardPass(batchSize);
 
     CHECK(cudaDeviceSynchronize());
 
-    double* d_loss; 
-    CHECK(cudaMalloc(&d_loss, sizeof(double)));
-    CHECK(cudaMemset(d_loss, 0, sizeof(double)));
+    float* d_loss; 
+    CHECK(cudaMalloc(&d_loss, sizeof(float)));
+    CHECK(cudaMemset(d_loss, 0, sizeof(float)));
     
 
     int size = batchSize * 3 * 32 * 32; //total numbers of pixels of both input and output
     int blockSize = 32;
     int gridSize = (size - 1) / blockSize + 1;
 
-    k_mse_loss_backward_input<<<gridSize, blockSize, blockSize * sizeof(double)>>>(d_output, d_input, d_grad_output, d_loss, size);
+    k_mse_loss_backward_input<<<gridSize, blockSize, blockSize * sizeof(float)>>>(d_output, d_input, d_grad_output, d_loss, size);
     
-    CHECK(cudaMemcpy(&m_loss, d_loss, sizeof(double), cudaMemcpyDeviceToHost));
+    CHECK(cudaMemcpy(&m_loss, d_loss, sizeof(float), cudaMemcpyDeviceToHost));
     
 
     if (train) {
@@ -763,12 +829,14 @@ void GPUAutoencoder::forwardPass(int batchSize){
     int H_in = 32, W_in = 32, outC = 256, inC = 3;
     int filterWidth = 3, padding = 1, stride = 1;
     dim3 grid((W_in-1)/blockSize + 1, (H_in-1)/blockSize + 1, batchSize*outC);
+
     measureKernelTime([&]() {
-        k_conv2d_forward<<<grid, block>>>(d_input, d_w_enc_conv1, d_b_enc_conv1, d_enc_conv1, inC, outC, H_in, W_in, filterWidth, padding, stride);
+        k_conv2d_forward_fuse<<<grid, block>>>(d_input, d_w_enc_conv1, d_b_enc_conv1, d_enc_conv1, inC, outC, H_in, W_in, filterWidth, padding, stride);
     }, conv_forward_time, "Conv2D Forward");
-    measureKernelTime([&]() {
-        k_relu_forward<<<(batchSize*outC*H_in*W_in-1)/256 + 1, 256>>>(d_enc_conv1, batchSize*outC*H_in*W_in);
-    }, relu_forward_time, "ReLU");
+
+    // measureKernelTime([&]() {
+    //     k_relu_forward<<<(batchSize*outC*H_in*W_in-1)/256 + 1, 256>>>(d_enc_conv1, batchSize*outC*H_in*W_in);
+    // }, relu_forward_time, "ReLU");
 
     inC = 256, outC = 256, filterWidth = 2;
     grid = dim3((W_in-1)/blockSize + 1, (H_in-1)/blockSize + 1, batchSize*outC);
@@ -779,11 +847,13 @@ void GPUAutoencoder::forwardPass(int batchSize){
     H_in = 16; W_in = 16; inC = 256; outC = 128; filterWidth = 3;
     grid = dim3((W_in-1)/blockSize + 1, (H_in-1)/blockSize + 1, batchSize*outC);    
     measureKernelTime([&]() {
-        k_conv2d_forward<<<grid, block>>>(d_enc_pool1, d_w_enc_conv2, d_b_enc_conv2, d_enc_conv2, inC, outC, H_in, W_in, filterWidth, padding, stride);
+        k_conv2d_forward_fuse<<<grid, block>>>(d_enc_pool1, d_w_enc_conv2, d_b_enc_conv2, d_enc_conv2, inC, outC, H_in, W_in, filterWidth, padding, stride);
     }, conv_forward_time, "Conv2D Forward");
-    measureKernelTime([&]() {
-        k_relu_forward<<<(batchSize*outC*H_in*W_in-1)/256 + 1, 256>>>(d_enc_conv2, batchSize*outC*H_in*W_in);
-    }, relu_forward_time, "ReLU");
+
+    // measureKernelTime([&]() {
+    //     k_relu_forward<<<(batchSize*outC*H_in*W_in-1)/256 + 1, 256>>>(d_enc_conv2, batchSize*outC*H_in*W_in);
+    // }, relu_forward_time, "ReLU");
+
 
     filterWidth = 2; inC=128; outC=128;
     grid = dim3((W_in-1)/blockSize + 1, (H_in-1)/blockSize + 1, batchSize*outC);
@@ -794,11 +864,12 @@ void GPUAutoencoder::forwardPass(int batchSize){
     H_in=8; W_in=8; inC=128; outC=128; filterWidth=3;
     grid = dim3((W_in-1)/blockSize + 1, (H_in-1)/blockSize + 1, batchSize*outC);
     measureKernelTime([&]() {
-    k_conv2d_forward<<<grid, block>>>(d_latent, d_w_dec_conv3, d_b_dec_conv3, d_dec_conv3, inC, outC, H_in, W_in, filterWidth, padding, stride);
+    k_conv2d_forward_fuse<<<grid, block>>>(d_latent, d_w_dec_conv3, d_b_dec_conv3, d_dec_conv3, inC, outC, H_in, W_in, filterWidth, padding, stride);
     }, conv_forward_time, "Conv2D Forward");
-    measureKernelTime([&]() {
-    k_relu_forward<<<(batchSize*outC*H_in*W_in-1)/256 + 1, 256>>>(d_dec_conv3, batchSize*outC*H_in*W_in);
-    }, relu_forward_time, "ReLU");
+    // measureKernelTime([&]() {
+    //     k_relu_forward<<<(batchSize*outC*H_in*W_in-1)/256 + 1, 256>>>(d_dec_conv3, batchSize*outC*H_in*W_in);
+    // }, relu_forward_time, "ReLU");
+
 
     filterWidth=2; inC=128; outC=128;
     grid = dim3((W_in-1)/blockSize + 1, (H_in-1)/blockSize + 1, batchSize*outC);
@@ -809,11 +880,12 @@ void GPUAutoencoder::forwardPass(int batchSize){
     H_in = 16; W_in = 16; inC = 128; outC = 256; filterWidth = 3;
     grid = dim3((W_in-1)/blockSize + 1, (H_in-1)/blockSize + 1, batchSize*outC);
     measureKernelTime([&]() {
-        k_conv2d_forward<<<grid, block>>>(d_dec_ups1, d_w_dec_conv4, d_b_dec_conv4, d_dec_conv4, inC, outC, H_in, W_in, filterWidth, padding, stride);
+        k_conv2d_forward_fuse<<<grid, block>>>(d_dec_ups1, d_w_dec_conv4, d_b_dec_conv4, d_dec_conv4, inC, outC, H_in, W_in, filterWidth, padding, stride);
     }, conv_forward_time, "Conv2D Forward");
-    measureKernelTime([&]() {
-        k_relu_forward<<<(batchSize*outC*H_in*W_in-1)/256 + 1, 256>>>(d_dec_conv4, batchSize*outC*H_in*W_in);
-    }, relu_forward_time, "ReLU");
+    // measureKernelTime([&]() {
+    //     k_relu_forward<<<(batchSize*outC*H_in*W_in-1)/256 + 1, 256>>>(d_dec_conv4, batchSize*outC*H_in*W_in);
+    // }, relu_forward_time, "ReLU");
+
 
     filterWidth=2; inC=256; outC=256;
     grid = dim3((W_in-1)/blockSize + 1, (H_in-1)/blockSize + 1, batchSize*outC);
@@ -838,7 +910,7 @@ void GPUAutoencoder::backwardPass(int batchSize) {
     int H_out = 32, W_out = 32, outC = 3, inC = 256;
     int filterWidth = 3, padding = 1, stride = 1;
     dim3 grid((W_out-1)/blockSize + 1, (H_out-1)/blockSize + 1, batchSize*outC);
-    // size_t sharedMemSize = (blockSize + filterWidth - 1) * (blockSize + filterWidth - 1) * sizeof(double);
+    // size_t sharedMemSize = (blockSize + filterWidth - 1) * (blockSize + filterWidth - 1) * sizeof(float);
     measureKernelTime([&]() {  
         k_conv2d_backward_weights<<<grid, block>>>(d_dec_ups2, d_grad_output, d_dw_dec_conv5, d_db_dec_conv5, inC, outC, H_out, W_out, filterWidth, padding, stride);
     }, conv_backward_time, "Conv2D Backward Weights");
@@ -979,16 +1051,16 @@ void GPUAutoencoder::load_weights(const std::string& filepath) {
     }
     
     // Helper lambda to load layer weights and biases
-    auto load_layer = [&](double* d_w, double* d_b, int outC, int inC, int K) {
+    auto load_layer = [&](float* d_w, float* d_b, int outC, int inC, int K) {
         int w_size = outC * inC * K * K;
         int b_size = outC;
         
         // Read from file to host
-        std::vector<double> h_weights(w_size);
-        std::vector<double> h_bias(b_size);
+        std::vector<float> h_weights(w_size);
+        std::vector<float> h_bias(b_size);
         
-        file.read(reinterpret_cast<char*>(h_weights.data()), w_size * sizeof(double));
-        file.read(reinterpret_cast<char*>(h_bias.data()), b_size * sizeof(double));
+        file.read(reinterpret_cast<char*>(h_weights.data()), w_size * sizeof(float));
+        file.read(reinterpret_cast<char*>(h_bias.data()), b_size * sizeof(float));
         
         if (file.fail()) {
             std::cerr << "Error: Failed to read weights from file" << std::endl;
@@ -996,8 +1068,8 @@ void GPUAutoencoder::load_weights(const std::string& filepath) {
         }
         
         // Copy from host to device
-        CHECK(cudaMemcpy(d_w, h_weights.data(), w_size * sizeof(double), cudaMemcpyHostToDevice));
-        CHECK(cudaMemcpy(d_b, h_bias.data(), b_size * sizeof(double), cudaMemcpyHostToDevice));
+        CHECK(cudaMemcpy(d_w, h_weights.data(), w_size * sizeof(float), cudaMemcpyHostToDevice));
+        CHECK(cudaMemcpy(d_b, h_bias.data(), b_size * sizeof(float), cudaMemcpyHostToDevice));
     };      
     
     load_layer(d_w_enc_conv1, d_b_enc_conv1, 256, 3, 3);
@@ -1018,20 +1090,20 @@ void GPUAutoencoder::save_weights(const std::string& filepath) {
     }
     
     // Helper lambda to     save layer weights and biases
-    auto save_layer = [&](double* d_w, double* d_b, int outC, int inC, int K) {
+    auto save_layer = [&](float* d_w, float* d_b, int outC, int inC, int K) {
         int w_size = outC * inC * K * K;
         int b_size = outC;
         
         // Copy weights from device to host
-        std::vector<double> h_weights(w_size);
-        std::vector<double> h_bias(b_size);
+        std::vector<float> h_weights(w_size);
+        std::vector<float> h_bias(b_size);
         
-        CHECK(cudaMemcpy(h_weights.data(), d_w, w_size * sizeof(double), cudaMemcpyDeviceToHost));
-        CHECK(cudaMemcpy(h_bias.data(), d_b, b_size * sizeof(double), cudaMemcpyDeviceToHost));
+        CHECK(cudaMemcpy(h_weights.data(), d_w, w_size * sizeof(float), cudaMemcpyDeviceToHost));
+        CHECK(cudaMemcpy(h_bias.data(), d_b, b_size * sizeof(float), cudaMemcpyDeviceToHost));
         
         // Write to file
-        file.write(reinterpret_cast<const char*>(h_weights.data()), w_size * sizeof(double));
-        file.write(reinterpret_cast<const char*>(h_bias.data()), b_size * sizeof(double));
+        file.write(reinterpret_cast<const char*>(h_weights.data()), w_size * sizeof(float));
+        file.write(reinterpret_cast<const char*>(h_bias.data()), b_size * sizeof(float));
     };
     
     // Save all layers in order
