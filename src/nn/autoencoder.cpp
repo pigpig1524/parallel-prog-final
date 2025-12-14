@@ -9,16 +9,16 @@
 
 using namespace std;
 
-void random_init(vector<double>& vec, int fan_in) {
+void random_init(vector<float>& vec, int fan_in) {
     // Xavier/Glorot initialization for better stability
-    double limit = sqrt(2.0 / (fan_in + vec.size()));
+    float limit = sqrt(2.0 / (fan_in + vec.size()));
     std::random_device rd;
     std::mt19937 generator(rd());
-    std::uniform_real_distribution<double> dist(-limit, limit);
-    for (double& val : vec) val = dist(generator);
+    std::uniform_real_distribution<float> dist(-limit, limit);
+    for (float& val : vec) val = dist(generator);
 }
 
-Autoencoder::Autoencoder(double learningRate, double momentum) 
+Autoencoder::Autoencoder(float learningRate, float momentum) 
     : m_learningRate(learningRate), m_momentum(momentum), m_loss(0.0) 
 {
     initWeights();
@@ -30,9 +30,9 @@ void Autoencoder::initWeights() {
     int K = 3; 
     
     // Hàm lambda để init vector gradient về 0
-    auto init_params = [&](std::vector<double>& w, std::vector<double>& b, 
-                           std::vector<double>& dw, std::vector<double>& db,
-                           std::vector<double>& vw, std::vector<double>& vb,
+    auto init_params = [&](std::vector<float>& w, std::vector<float>& b, 
+                           std::vector<float>& dw, std::vector<float>& db,
+                           std::vector<float>& vw, std::vector<float>& vb,
                            int outC, int inC) {
         w.resize(outC * inC * K * K); random_init(w, inC * K * K);
         b.resize(outC, 0.0);
@@ -51,7 +51,7 @@ void Autoencoder::initWeights() {
     init_params(w_dec_conv5, b_dec_conv5, d_w_dec_conv5, d_b_dec_conv5, v_w_dec_conv5, v_b_dec_conv5, 3, 256); 
 }
 
-void Autoencoder::train_sample(const std::vector<double>& imageFlat) {
+void Autoencoder::train_sample(const std::vector<float>& imageFlat) {
     a_input = Tensor(3, 32, 32);
     a_input.data = imageFlat;
 
@@ -62,7 +62,7 @@ void Autoencoder::train_sample(const std::vector<double>& imageFlat) {
     int size = a_output.data.size();
     // Sử dụng MSE Loss
     for(int i=0; i<size; i++) {
-        double diff = a_output.data[i] - a_input.data[i];
+        float diff = a_output.data[i] - a_input.data[i];
         m_loss += diff * diff;
     }
     m_loss /= size;
@@ -71,7 +71,7 @@ void Autoencoder::train_sample(const std::vector<double>& imageFlat) {
     d_output = Tensor(3, 32, 32);
     for(int i=0; i<size; i++) {
         // Match GPU version: dL/dy = (2/N) * (target - predicted)
-        double diff = a_input.data[i] - a_output.data[i]; // target - predicted
+        float diff = a_input.data[i] - a_output.data[i]; // target - predicted
         d_output.data[i] = -(2.0f / size) * diff;
         avg_grad += fabs(d_output.data[i]);
     }
@@ -100,18 +100,18 @@ void Autoencoder::update_weights(int batchSize) {
     apply_update(b_dec_conv5, d_b_dec_conv5, v_b_dec_conv5, batchSize);
 }
 
-void Autoencoder::apply_update(std::vector<double>& weights, std::vector<double>& d_weights, std::vector<double>& velocity, int batchSize) {
+void Autoencoder::apply_update(std::vector<float>& weights, std::vector<float>& d_weights, std::vector<float>& velocity, int batchSize) {
     for(size_t i=0; i<weights.size(); i++) {
         // Chia gradient cho batch size để lấy trung bình
-        double avg_grad = d_weights[i] / batchSize;
+        float avg_grad = d_weights[i] / batchSize;
         
         // Gradient clipping to prevent exploding gradients
-        const double grad_clip = 5.0;
+        const float grad_clip = 5.0;
         if (avg_grad > grad_clip) avg_grad = grad_clip;
         else if (avg_grad < -grad_clip) avg_grad = -grad_clip;
         
         // SGD with Momentum
-        double v = m_momentum * velocity[i] - m_learningRate * avg_grad;
+        float v = m_momentum * velocity[i] - m_learningRate * avg_grad;
         velocity[i] = v;
         weights[i] += v;
         
@@ -121,7 +121,7 @@ void Autoencoder::apply_update(std::vector<double>& weights, std::vector<double>
     }
 }
 
-std::vector<double> Autoencoder::getOutput(const std::vector<double>& imageFlat) {
+std::vector<float> Autoencoder::getOutput(const std::vector<float>& imageFlat) {
     a_input = Tensor(3, 32, 32);
     a_input.data = imageFlat;
     forwardPass();
@@ -228,7 +228,7 @@ void Autoencoder::backwardPass() {
 // Tuy nhiên, logic conv2d_backward đã được viết để dùng += (accumulate), nên nó tương thích hoàn toàn.
 // Chỉ cần đảm bảo hàm gọi d_input.zero() ở đầu hàm backward như phiên bản trước là đúng.
 
-void Autoencoder::conv2d_forward(const Tensor& input, const std::vector<double>& weights, const std::vector<double>& bias, Tensor& output, int stride, int padding) {
+void Autoencoder::conv2d_forward(const Tensor& input, const std::vector<float>& weights, const std::vector<float>& bias, Tensor& output, int stride, int padding) {
     int K = 3;
     // ... Logic forward giữ nguyên ...
     // Để đảm bảo file chạy được, tôi chép lại đoạn code quan trọng
@@ -237,7 +237,7 @@ void Autoencoder::conv2d_forward(const Tensor& input, const std::vector<double>&
     for(int oc = 0; oc < output.c; oc++) {
         for(int oh = 0; oh < output.h; oh++) {
             for(int ow = 0; ow < output.w; ow++) {
-                double sum = bias[oc];
+                float sum = bias[oc];
                 for(int ic = 0; ic < input.c; ic++) {
                     for(int kh = 0; kh < K; kh++) {
                         for(int kw = 0; kw < K; kw++) {
@@ -256,7 +256,7 @@ void Autoencoder::conv2d_forward(const Tensor& input, const std::vector<double>&
 }
 
 void Autoencoder::relu_forward(Tensor& t) {
-    for(double& v : t.data) if (v < 0) v = 0;
+    for(float& v : t.data) if (v < 0) v = 0;
 }
 
 void Autoencoder::maxpool2d_forward(const Tensor& input, Tensor& output) {
@@ -264,12 +264,12 @@ void Autoencoder::maxpool2d_forward(const Tensor& input, Tensor& output) {
     for(int c = 0; c < input.c; c++) {
         for(int oh = 0; oh < output.h; oh++) {
             for(int ow = 0; ow < output.w; ow++) {
-                double max_val = -1e9;
+                float max_val = -1e9;
                 for(int kh=0; kh<kernel; kh++) {
                     for(int kw=0; kw<kernel; kw++) {
                         int ih = oh * stride + kh;
                         int iw = ow * stride + kw;
-                        double val = input.at(c, ih, iw);
+                        float val = input.at(c, ih, iw);
                         if(val > max_val) max_val = val;
                     }
                 }
@@ -284,7 +284,7 @@ void Autoencoder::upsample2d_forward(const Tensor& input, Tensor& output) {
     for(int c = 0; c < input.c; c++) {
         for(int ih = 0; ih < input.h; ih++) {
             for(int iw = 0; iw < input.w; iw++) {
-                double val = input.at(c, ih, iw);
+                float val = input.at(c, ih, iw);
                 output.at(c, ih*scale, iw*scale) = val;
                 output.at(c, ih*scale, iw*scale+1) = val;
                 output.at(c, ih*scale+1, iw*scale) = val;
@@ -294,15 +294,15 @@ void Autoencoder::upsample2d_forward(const Tensor& input, Tensor& output) {
     }
 }
 
-void Autoencoder::conv2d_backward(const Tensor& input, const Tensor& d_output, const std::vector<double>& weights, Tensor& d_input, std::vector<double>& d_weights, std::vector<double>& d_bias, int stride, int padding) {
+void Autoencoder::conv2d_backward(const Tensor& input, const Tensor& d_output, const std::vector<float>& weights, Tensor& d_input, std::vector<float>& d_weights, std::vector<float>& d_bias, int stride, int padding) {
     int K = 3;
     d_input.zero(); 
     // Logic backward tích lũy (+=)
     for(int oc = 0; oc < d_output.c; oc++) {
-        double sum_bias = 0.0;
+        float sum_bias = 0.0;
         for(int oh = 0; oh < d_output.h; oh++) {
             for(int ow = 0; ow < d_output.w; ow++) {
-                double d_val = d_output.at(oc, oh, ow);
+                float d_val = d_output.at(oc, oh, ow);
                 sum_bias += d_val;
                 for(int ic = 0; ic < input.c; ic++) {
                     for(int kh = 0; kh < K; kh++) {
@@ -336,9 +336,9 @@ void Autoencoder::maxpool2d_backward(const Tensor& input, const Tensor& output, 
     for(int c = 0; c < input.c; c++) {
         for(int oh = 0; oh < output.h; oh++) {
             for(int ow = 0; ow < output.w; ow++) {
-                double d_val = d_output.at(c, oh, ow);
+                float d_val = d_output.at(c, oh, ow);
                 int ih_start = oh * stride; int iw_start = ow * stride;
-                double max_val = output.at(c, oh, ow);
+                float max_val = output.at(c, oh, ow);
                 for(int kh=0; kh<2; kh++) {
                     for(int kw=0; kw<2; kw++) {
                         int ih = ih_start + kh; int iw = iw_start + kw;
@@ -357,7 +357,7 @@ void Autoencoder::upsample2d_backward(const Tensor& d_output, Tensor& d_input) {
     for(int c = 0; c < d_input.c; c++) {
         for(int ih = 0; ih < d_input.h; ih++) {
             for(int iw = 0; iw < d_input.w; iw++) {
-                double sum = 0;
+                float sum = 0;
                 sum += d_output.at(c, ih*scale, iw*scale);
                 sum += d_output.at(c, ih*scale, iw*scale+1);
                 sum += d_output.at(c, ih*scale+1, iw*scale);
@@ -376,9 +376,9 @@ void Autoencoder::save_weights(const std::string& filepath) {
     }
 
     // Save raw data without size metadata (compatible with GPU version)
-    auto save_layer = [&](const vector<double>& weights, const vector<double>& bias) {
-        file.write(reinterpret_cast<const char*>(weights.data()), weights.size() * sizeof(double));
-        file.write(reinterpret_cast<const char*>(bias.data()), bias.size() * sizeof(double));
+    auto save_layer = [&](const vector<float>& weights, const vector<float>& bias) {
+        file.write(reinterpret_cast<const char*>(weights.data()), weights.size() * sizeof(float));
+        file.write(reinterpret_cast<const char*>(bias.data()), bias.size() * sizeof(float));
     };
 
     save_layer(w_enc_conv1, b_enc_conv1);
@@ -399,15 +399,15 @@ void Autoencoder::load_weights(const std::string& filepath) {
     }
 
     // Load raw data without size metadata (compatible with GPU version)
-    auto load_layer = [&](vector<double>& weights, vector<double>& bias, int outC, int inC, int K) {
+    auto load_layer = [&](vector<float>& weights, vector<float>& bias, int outC, int inC, int K) {
         int w_size = outC * inC * K * K;
         int b_size = outC;
         
         weights.resize(w_size);
         bias.resize(b_size);
         
-        ifs.read(reinterpret_cast<char*>(weights.data()), w_size * sizeof(double));
-        ifs.read(reinterpret_cast<char*>(bias.data()), b_size * sizeof(double));
+        ifs.read(reinterpret_cast<char*>(weights.data()), w_size * sizeof(float));
+        ifs.read(reinterpret_cast<char*>(bias.data()), b_size * sizeof(float));
         
         if (ifs.fail()) {
             cerr << "Error: Failed to read weights from file" << endl;
@@ -424,4 +424,4 @@ void Autoencoder::load_weights(const std::string& filepath) {
     ifs.close();
 }
 
-double Autoencoder::getLoss() const { return m_loss; }
+float Autoencoder::getLoss() const { return m_loss; }

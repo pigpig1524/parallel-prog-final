@@ -8,7 +8,7 @@
 class BinaryFileComparator {
 public:
     static bool compareFiles(const std::string& file1, const std::string& file2, 
-                           double tolerance = 1e-6f, bool verbose = true) {
+                           float tolerance = 1e-6f, bool verbose = true) {
         // Open files
         std::ifstream f1(file1, std::ios::binary);
         std::ifstream f2(file2, std::ios::binary);
@@ -41,19 +41,19 @@ public:
         f1.seekg(0, std::ios::beg);
         f2.seekg(0, std::ios::beg);
         
-        // Calculate number of double elements
-        std::size_t numElements = size1 / sizeof(double);
+        // Calculate number of float elements
+        std::size_t numElements = size1 / sizeof(float);
         
         if (verbose) {
-            std::cout << "Comparing " << numElements << " double elements..." << std::endl;
+            std::cout << "Comparing " << numElements << " float elements..." << std::endl;
             std::cout << "Tolerance: " << tolerance << std::endl;
         }
         
         // Read and compare element by element
-        std::vector<double> buffer1(1024), buffer2(1024);
+        std::vector<float> buffer1(1024), buffer2(1024);
         std::size_t elementsRead = 0;
         std::size_t differences = 0;
-        double maxDiff = 0.0f;
+        float maxDiff = 0.0f;
         std::size_t maxDiffIndex = 0;
         
         while (elementsRead < numElements) {
@@ -61,9 +61,9 @@ public:
                                                  numElements - elementsRead);
             
             f1.read(reinterpret_cast<char*>(buffer1.data()), 
-                   elementsToRead * sizeof(double));
+                   elementsToRead * sizeof(float));
             f2.read(reinterpret_cast<char*>(buffer2.data()), 
-                   elementsToRead * sizeof(double));
+                   elementsToRead * sizeof(float));
             
             if (f1.gcount() != f2.gcount()) {
                 std::cerr << "Error reading files at element " << elementsRead << std::endl;
@@ -72,7 +72,7 @@ public:
             
             // Compare elements in this chunk
             for (std::size_t i = 0; i < elementsToRead; ++i) {
-                double diff = std::abs(buffer1[i] - buffer2[i]);
+                float diff = std::abs(buffer1[i] - buffer2[i]);
                 
                 if (diff > tolerance) {
                     differences++;
@@ -119,17 +119,17 @@ public:
         
         file.seekg(0, std::ios::end);
         std::size_t size = file.tellg();
-        std::size_t numFloats = size / sizeof(double);
+        std::size_t numFloats = size / sizeof(float);
         
         std::cout << "File: " << filename << std::endl;
         std::cout << "  Size: " << size << " bytes" << std::endl;
-        std::cout << "  Elements: " << numFloats << " doubles" << std::endl;
+        std::cout << "  Elements: " << numFloats << " floats" << std::endl;
         
         // Read first few elements for preview
         file.seekg(0, std::ios::beg);
-        std::vector<double> preview(std::min(numFloats, static_cast<std::size_t>(5)));
+        std::vector<float> preview(std::min(numFloats, static_cast<std::size_t>(5)));
         file.read(reinterpret_cast<char*>(preview.data()), 
-                 preview.size() * sizeof(double));
+                 preview.size() * sizeof(float));
         
         std::cout << "  First elements: ";
         for (std::size_t i = 0; i < preview.size(); ++i) {
@@ -145,7 +145,7 @@ int main(int argc, char* argv[]) {
     
     std::string file1 = "weights/cpu_trained_weights.bin";
     std::string file2 = "weights/gpu_trained_weights.bin";
-    double tolerance = 1e-4f;
+    float tolerance = 1e-4f;
 
     
     std::cout << "=== BINARY FILE COMPARISON ===" << std::endl << std::endl;

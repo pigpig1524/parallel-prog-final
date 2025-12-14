@@ -10,7 +10,7 @@
 // #include <cuda_runtime.h>
 
 // Hàm đọc một file binary CIFAR-10 và trả về vector<pair<label, image_pixels>>
-std::vector<std::pair<int, std::vector<double>>> readBinaryFile(const std::string& filepath) {
+std::vector<std::pair<int, std::vector<float>>> readBinaryFile(const std::string& filepath) {
     std::ifstream file(filepath, std::ios::binary);
     if (!file.is_open()) {
         throw std::runtime_error("Cannot open file: " + filepath);
@@ -30,7 +30,7 @@ std::vector<std::pair<int, std::vector<double>>> readBinaryFile(const std::strin
     }
     
     int numImages = fileSize / RECORD_SIZE;
-    std::vector<std::pair<int, std::vector<double>>> imageData;
+    std::vector<std::pair<int, std::vector<float>>> imageData;
     imageData.reserve(numImages);
     
     for (int i = 0; i < numImages; i++) {
@@ -46,11 +46,11 @@ std::vector<std::pair<int, std::vector<double>>> readBinaryFile(const std::strin
             throw std::runtime_error("Error reading image " + std::to_string(i) + " from file: " + filepath);
         }
         
-        // Convert unsigned char (0-255) to double (0.0-1.0) for GPU
-        std::vector<double> pixels;
+        // Convert unsigned char (0-255) to float (0.0-1.0) for GPU
+        std::vector<float> pixels;
         pixels.reserve(IMAGE_SIZE);
         for (unsigned char pixel : pixelBytes) {
-            pixels.push_back(static_cast<double>(pixel) / 255.0f);
+            pixels.push_back(static_cast<float>(pixel) / 255.0f);
         }
         
         // Add to result as pair<label, pixels>
@@ -61,8 +61,8 @@ std::vector<std::pair<int, std::vector<double>>> readBinaryFile(const std::strin
 }
 
 // Hàm đọc tất cả file .bin trong folder và load vào train_data
-std::vector<std::vector<double>> loadData(const std::string& folderPath, const std::string& type="train") {
-    std::vector<std::vector<double>> train_data;
+std::vector<std::vector<float>> loadData(const std::string& folderPath, const std::string& type="train") {
+    std::vector<std::vector<float>> train_data;
     printf("== Loading %s data...\n", type.c_str());
     try {
         // Kiểm tra folder có tồn tại không
@@ -114,8 +114,8 @@ std::vector<std::vector<double>> loadData(const std::string& folderPath, const s
     return train_data;
 }
 
-// Function to export vector<double> to binary file
-void exportVectorToBinary(const std::vector<double>& data, const std::string& filename) {
+// Function to export vector<float> to binary file
+void exportVectorToBinary(const std::vector<float>& data, const std::string& filename) {
     std::ofstream file(filename, std::ios::binary);
     if (!file.is_open()) {
         throw std::runtime_error("Cannot open file for writing: " + filename);
@@ -126,14 +126,14 @@ void exportVectorToBinary(const std::vector<double>& data, const std::string& fi
     // file.write(reinterpret_cast<const char*>(&size), sizeof(size));
     
     // Write the vector data
-    file.write(reinterpret_cast<const char*>(data.data()), data.size() * sizeof(double));
+    file.write(reinterpret_cast<const char*>(data.data()), data.size() * sizeof(float));
     
     if (!file.good()) {
         throw std::runtime_error("Error writing to file: " + filename);
     }
     
     file.close();
-    std::cout << "Successfully exported " << data.size() << " doubles to: " << filename << std::endl;
+    std::cout << "Successfully exported " << data.size() << " floats to: " << filename << std::endl;
 }
 
 int main() {
@@ -142,8 +142,8 @@ int main() {
     std::cout << "Current working directory: " << std::filesystem::current_path() << std::endl;
     std::cout << "Looking for data at: " << std::filesystem::absolute(dataFolder) << std::endl;
     
-    std::vector<std::vector<double>> train_data = loadData(dataFolder, "train");
-    std::vector<std::vector<double>> test_data = loadData(dataFolder, "test");
+    std::vector<std::vector<float>> train_data = loadData(dataFolder, "train");
+    std::vector<std::vector<float>> test_data = loadData(dataFolder, "test");
 
     std::cout << "Loaded " << train_data.size() << " samples" << std::endl;
     
@@ -155,8 +155,8 @@ int main() {
     // Training parameters
     int EPOCHS = 1;
     int BATCH_SIZE = 32; // Reduced for GPU memory
-    double LR = 0.001;
-    double MOMENTUM = 0.9;
+    float LR = 0.001;
+    float MOMENTUM = 0.9;
     
     // Print training configuration
     std::cout << "==== Training Configuration:" << std::endl;
@@ -184,7 +184,7 @@ int main() {
     // Training loop for multiple epochs
     // int ok = 0;
     for (int epoch = 0; epoch < EPOCHS; ++epoch) {
-        double epoch_loss = 0.0f;
+        float epoch_loss = 0.0f;
         int processed_batches = 0;
         float train_milliseconds = 0, test_milliseconds = 0;
         std::cout << "\n=== Epoch " << (epoch + 1) << "/" << EPOCHS << " ===" << std::endl;
@@ -206,7 +206,7 @@ int main() {
                     
             
             // Prepare batch data - flatten to single vector
-            std::vector<double> batch_data;
+            std::vector<float> batch_data;
             batch_data.reserve(current_batch_size * 3072); // 32*32*3 = 3072
             
             for (int j = 0; j < current_batch_size; j++) {
@@ -231,7 +231,7 @@ int main() {
         printf("\nStarting testing batches...\n");
 
         ae.setEval();
-        double test_loss = 0.0f;
+        float test_loss = 0.0f;
         cudaEventRecord(start);
         
         for (int i = 0; i < total_test_samples; i += BATCH_SIZE) {
@@ -249,7 +249,7 @@ int main() {
                     
             
             // Prepare batch data - flatten to single vector
-            std::vector<double> batch_data;
+            std::vector<float> batch_data;
             batch_data.reserve(current_batch_size * 3072); // 32*32*3 = 3072
             
             for (int j = 0; j < current_batch_size; j++) {
@@ -269,8 +269,8 @@ int main() {
         cudaEventElapsedTime(&test_milliseconds, start, stop);
 
         // Calculate epoch statistics
-        double avg_epoch_loss = epoch_loss / processed_batches; 
-        // double avg_test_loss = test_loss / total_test_batches;
+        float avg_epoch_loss = epoch_loss / processed_batches; 
+        // float avg_test_loss = test_loss / total_test_batches;
         
         std::cout << "\n--- Epoch " << (epoch + 1) << " Summary ---" << std::endl;
         std::cout << "Batches processed: " << processed_batches << std::endl;
@@ -289,12 +289,12 @@ int main() {
     printf("Total Kernel Time: %.2f ms\n", ae.getTotalKernelTime());
     printf("Convolution Forward Time: %.2f ms||| Ratio: %.2f%%\n", ae.getConvForwardTime(), (ae.getConvForwardTime() / ae.getTotalKernelTime()) * 100.0);
     printf("Convolution Backward Time: %.2f ms||| Ratio: %.2f%%\n", ae.getConvBackwardTime(), (ae.getConvBackwardTime() / ae.getTotalKernelTime()) * 100.0);
-    double conv_time = ae.getConvForwardTime() + ae.getConvBackwardTime();
+    float conv_time = ae.getConvForwardTime() + ae.getConvBackwardTime();
     printf("Convolution Time: %.2f ms||| Ratio: %.2f%%\n", conv_time, (conv_time / ae.getTotalKernelTime()) * 100.0);
-    double relu_time = ae.getReluForwardTime() + ae.getReluBackwardTime();
+    float relu_time = ae.getReluForwardTime() + ae.getReluBackwardTime();
     
     printf("ReLU Time: %.2f ms||| Ratio: %.2f%%\n", relu_time, (relu_time / ae.getTotalKernelTime()) * 100.0);
-    double pool_time = ae.getPoolForwardTime() + ae.getPoolBackwardTime(); 
+    float pool_time = ae.getPoolForwardTime() + ae.getPoolBackwardTime(); 
     printf("Pooling Time: %.2f ms||| Ratio: %.2f%%\n", pool_time, (pool_time / ae.getTotalKernelTime()) * 100.0);
     
 
