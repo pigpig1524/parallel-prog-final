@@ -4,3 +4,6 @@ weights/
 *.exe
 latent/
 compare_latent.cpp
+
+.vs/
+extracted/
