@@ -71,9 +71,10 @@ Pooling Time: 806.99 ms||| Ratio: 0.37%
 
 #### Cập nhật tối 13/12:
 - Chuyển `double` sang `float` cho toàn bộ work
-- Fuse forward kernel Convolution + ReLU
+- Fuse forward kernel Convolution + ReLU: `k_conv2d_forward_fuse`
 - Chuyển sang dùng `const float* __restrict__` cho các input không thay đổi
 
+Cải thiện tốc độ chạy: 
 ```plain
 --- Epoch 1 Summary ---
 Batches processed: 313
@@ -91,4 +92,21 @@ ReLU Time: 157.13 ms||| Ratio: inf%
 Pooling Time: 522.18 ms||| Ratio: inf%
 ```
 
+#### Cập nhật 14/12:
+- các hàm tối ưu mới: `k_conv2d_backward_bias_reduction`, `k_conv2d_backward_weights_reduction`
 
+Cải thiện tốc độ chạy:
+
+```
+--- Epoch 1 Summary ---
+Batches processed: 313
+Average train loss: 0.113118
+Epoch train time: 182.83 seconds
+=== Time summary ===
+Total Kernel Time: 182529.27 ms
+Convolution Forward Time: 18634.27 ms||| Ratio: 10.21%
+Convolution Backward Time: 163200.14 ms||| Ratio: 89.41%
+Convolution Time: 181834.41 ms||| Ratio: 99.62%
+ReLU Time: 157.09 ms||| Ratio: 0.09%
+Pooling Time: 537.76 ms||| Ratio: 0.29%
+```

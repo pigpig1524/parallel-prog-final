@@ -175,7 +175,7 @@ int main() {
     // Initialize GPU Autoencoder
     GPUAutoencoder ae(LR, MOMENTUM);
     
-    ae.load_weights("../weights/test_weights.bin"); // Load initial weights if available
+    // ae.load_weights("../weights/test_weights.bin"); // Load initial weights if available
     // CUDA Events for timing
     cudaEvent_t start, stop;
     cudaEventCreate(&start);
@@ -279,11 +279,7 @@ int main() {
         std::cout << "Epoch train time: " << std::fixed << std::setprecision(2) << (train_milliseconds / 1000.0f) << " seconds" << std::endl;
         // std::cout << "Inference time: " << std::fixed << std::setprecision(2) << (test_milliseconds / 1000.0f) << " seconds" << std::endl;
 
-        // Save weights periodically
-        // if ((epoch + 1) % 2 == 0) {
-        //     std::cout << "Saving weights checkpoint..." << std::endl;
-        //     ae.get_weights_to_host();
-        // }
+
     }
     printf("=== Time summary ===\n");
     printf("Total Kernel Time: %.2f ms\n", ae.getTotalKernelTime());
