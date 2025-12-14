@@ -17,7 +17,7 @@ struct Sample {
 
 struct Split {
     unsigned char * labels;
-    float ** images;
+    float ** images = nullptr;
 };
 
 struct Batch {

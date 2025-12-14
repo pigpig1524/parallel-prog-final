@@ -15,9 +15,15 @@ Dataset::Dataset(const char* dataPath) {
 
 Dataset::~Dataset() {
     delete[] this->dataPath;
-    for (int i = 0; i < this->nTrain; i++) {
-        delete[] this->trainSplit.images[i];
+    if (this->testSplit.images != nullptr) {
+        for (int i = 0; i < this->nTest; i++) {
+            delete[] this->testSplit.images[i];
+        }
+        delete[] this->testSplit.images;
+        delete[] this->testSplit.labels;
     }
+    // for (int i = 0; i < this->nTrain; i++) {
+    //     delete[] this->trainSplit.images[i];
     delete[] this->trainSplit.images;
     delete[] this->trainSplit.labels;
 }

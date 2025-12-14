@@ -1,6 +1,6 @@
 // main.cpp
 #include <iostream>
-#include "src/features_extractor.h"
+#include "src/features_extractor.cpp"
 
 int main() {
     const char* dataPath = "data/cifar-10-batches-bin/";

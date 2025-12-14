@@ -3,12 +3,10 @@
 #include <fstream>
 
 #include "features_extractor.h"
-#include "dataset.h" 
+// #include "dataset.h" 
 
 void extractLatentFeatures(const char* dataPath, const char* modelPath, const char* outputPath) {
-    Dataset dataset(dataPath);
-    
-    
+    Dataset* dataset(new Dataset(dataPath));
     /*
     dataset.loadData();
     dataset.shuffle();
@@ -57,5 +55,6 @@ void extractLatentFeatures(const char* dataPath, const char* modelPath, const ch
     //}
 
     //outFile.close();
+    delete dataset;
     std::cout << "Features saved: " << outputPath << std::endl;
 }
