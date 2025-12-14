@@ -2,3 +2,6 @@ data/
 build/
 weights/
 *.exe
+
+# Libraries files
+libsvm-3.36/

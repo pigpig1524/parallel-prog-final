@@ -1,10 +1,13 @@
-#include "nn/autoencoder.h"
-#include <cmath>
+// main.cpp
 #include <iostream>
+#include "src/features_extractor.h"
 
-int main(){
-    Autoencoder ae = Autoencoder(0.001, 0.9);
-    // ae.initWeights();
-    ae.save_weights("../weights/test_weights.bin");
+int main() {
+    const char* dataPath = "data/cifar-10-batches-bin/";
+    const char* modelPath = "weights/gpu_train.bin";
+    const char* featuresPath = "data/train_latent_features.bin";
+
+    extractLatentFeatures(dataPath, modelPath, featuresPath);
+    std::cout << "Extraction completed!" << std::endl;
     return 0;
 }
