@@ -3,5 +3,5 @@ build/
 weights/
 *.exe
 
-# Libraries files
-libsvm-3.36/
+.vs/
+extracted/
