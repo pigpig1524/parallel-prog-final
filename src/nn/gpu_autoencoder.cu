@@ -596,7 +596,7 @@ __global__ void k_conv2d_backward_weights_smem(double* input, double* d_output, 
     }
     
 }
-
+zzz
 __global__ void apply_update(double* weights, double* d_weights, double* velocity, 
                                  double lr, double momentum, int size) {
     int idx = blockIdx.x * blockDim.x + threadIdx.x;

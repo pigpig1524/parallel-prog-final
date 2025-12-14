@@ -2,3 +2,5 @@ data/
 build/
 weights/
 *.exe
+latent/
+compare_latent.cpp
