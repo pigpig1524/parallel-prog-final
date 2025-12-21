@@ -6,6 +6,8 @@
 #include <fstream>
 #include <string>
 #include <algorithm>
+#include <chrono>
+#include <iomanip>
 
 
 std::vector<std::pair<int, std::vector<float>>> readBinaryFile(const std::string& filepath) {
@@ -15,7 +17,7 @@ std::vector<std::pair<int, std::vector<float>>> readBinaryFile(const std::string
     }
 
     // CIFAR-10 format: mỗi image = 1 byte label + 3072 bytes pixel data
-    const int IMAGE_SIZE = 3072; // 32 * 32 * 3 (RGB)
+    const int IMAGE_SIZE = 3072; 
     const int RECORD_SIZE = 1 + IMAGE_SIZE; 
     
     // Tính số lượng images trong file
@@ -32,11 +34,9 @@ std::vector<std::pair<int, std::vector<float>>> readBinaryFile(const std::string
     imageData.reserve(numImages);
     
     for (int i = 0; i < numImages; i++) {
-        // Đọc label (1 byte)
         unsigned char label;
         file.read(reinterpret_cast<char*>(&label), 1);
         
-        // Đọc pixel data (3072 bytes)
         std::vector<unsigned char> pixelBytes(IMAGE_SIZE);
         file.read(reinterpret_cast<char*>(pixelBytes.data()), IMAGE_SIZE);
         
@@ -58,12 +58,10 @@ std::vector<std::pair<int, std::vector<float>>> readBinaryFile(const std::string
     return imageData;
 }
 
-// Hàm đọc tất cả file .bin trong folder và load vào train_data
 std::vector<std::vector<float>> loadTrainData(const std::string& folderPath) {
     std::vector<std::vector<float>> train_data;
     
     try {
-        // Kiểm tra folder có tồn tại không
         if (!std::filesystem::exists(folderPath)) {
             throw std::runtime_error("Folder does not exist: " + folderPath);
         }
@@ -86,7 +84,6 @@ std::vector<std::vector<float>> loadTrainData(const std::string& folderPath) {
         for (const auto& filepath : binFiles) {
             try {
                 auto imageData = readBinaryFile(filepath);
-                // printf("  Loaded %zu images\n", imageData.size());
                 
                 // Extract only the pixel data (second element of pair) for training
                 for (const auto& imagePair : imageData) {
@@ -109,11 +106,9 @@ std::vector<std::vector<float>> loadTrainData(const std::string& folderPath) {
 
 
 int main() {
-    // Đường dẫn đến folder chứa các file batch
     std::string dataFolder = "../data/cifar-10-binary/cifar-10-batches-bin"; // Thay đổi đường dẫn này
     std::cout << "Current working directory: " << std::filesystem::current_path() << std::endl;
     std::cout << "Looking for data at: " << std::filesystem::absolute(dataFolder) << std::endl;
-    // Load dữ liệu training
     std::cout << "Loading training data..." << std::endl;
     std::vector<std::vector<float>> train_data = loadTrainData(dataFolder);
     std::cout << "Loaded " << train_data.size() << " samples" << std::endl;
@@ -123,7 +118,7 @@ int main() {
         return -1;
     }
     int EPOCHS = 1;
-    int BATCH_SIZE = 3;
+    int BATCH_SIZE = 32;
     float LR = 0.001;
     float MOMENTUM = 0.9;
     float total_epoch_loss = 0;
@@ -135,11 +130,17 @@ int main() {
     std::cout << "Batch size: " << BATCH_SIZE << std::endl;
     std::cout << "Total batches: " << total_batches << std::endl;
     std::cout << "=========================" << std::endl;
+    
+    // Bắt đầu đo thời gian training
+    auto training_start_time = std::chrono::high_resolution_clock::now();
 
     Autoencoder ae = Autoencoder(LR, MOMENTUM); // Reduced learning rate 
     ae.load_weights("../weights/test_weights.bin");
     int ok = 0;
     for (int epoch = 0; epoch < EPOCHS; ++epoch) {
+        // Bắt đầu đo thời gian cho epoch
+        auto epoch_start_time = std::chrono::high_resolution_clock::now();
+        
         float epoch_loss = 0.0f;
         int processed_batches = 0;
         
@@ -154,8 +155,8 @@ int main() {
             int current_batch_num = (i / BATCH_SIZE) + 1;
             
             ok ++;
-            if (ok > 4){
-                ae.save_weights("../weights/cpu_trained_weights_checking.bin");
+            if (ok > 1){
+                // ae.save_weights("../weights/cpu_trained_weights_checking.bin");
                 break;
             }
             std::cout << "\rProcessing batch " << current_batch_num << "/" << total_batches 
@@ -169,19 +170,29 @@ int main() {
                 ae.train_sample(image);
                 epoch_loss += ae.getLoss()/current_batch_size;
             }
-            std::cout << "\n| Avg Grad: " << ae.avg_grad / current_batch_size<<std::endl;
+            // std::cout << "\n| Avg Grad: " << ae.avg_grad / current_batch_size<<std::endl;
             ae.update_weights(current_batch_size);
 
             processed_batches++;
         }
 
 
+        // Tính thời gian epoch
+        auto epoch_end_time = std::chrono::high_resolution_clock::now();
+        auto epoch_duration = std::chrono::duration_cast<std::chrono::milliseconds>(epoch_end_time - epoch_start_time);
+        
         // Calculate epoch statistics
         float avg_epoch_loss = epoch_loss / processed_batches;
         
         std::cout << "\n--- Epoch " << (epoch + 1) << " Summary ---" << std::endl;
         std::cout << "Batches processed: " << processed_batches << std::endl;
         std::cout << "Average loss: " << std::fixed << std::setprecision(6) << avg_epoch_loss << std::endl;
+        std::cout << "Epoch time: " << epoch_duration.count() << " ms (" << std::fixed << std::setprecision(2) << epoch_duration.count() / 1000.0 << " seconds)" << std::endl;
+        
+        // Hiển thị thời gian training tổng cộng
+        auto current_time = std::chrono::high_resolution_clock::now();
+        auto total_duration = std::chrono::duration_cast<std::chrono::milliseconds>(current_time - training_start_time);
+        std::cout << "Total training time so far: " << total_duration.count() << " ms (" << std::fixed << std::setprecision(2) << total_duration.count() / 1000.0 << " seconds)" << std::endl;
                   
         // Save weights periodically
         // if ((epoch + 1) % 2 == 0) {
@@ -189,5 +200,17 @@ int main() {
         //     ae.save_weights("../weights/cpu_trained_weights_epoch" + std::to_string(epoch + 1) + ".bin");
         // }
     }
+    
+    auto training_end_time = std::chrono::high_resolution_clock::now();
+    auto total_training_duration = std::chrono::duration_cast<std::chrono::milliseconds>(training_end_time - training_start_time);
+    
+    std::cout << "\n=== Training Completed ===" << std::endl;
+    std::cout << "Total training time: " << total_training_duration.count() << " ms (" 
+              << std::fixed << std::setprecision(2) << total_training_duration.count() / 1000.0 << " seconds)" << std::endl;
+    if (total_training_duration.count() > 60000) {
+        std::cout << "Total training time: " << std::fixed << std::setprecision(2) << total_training_duration.count() / 60000.0 << " minutes" << std::endl;
+    }
+    std::cout << "=========================" << std::endl;
+    
     return 0;
 }

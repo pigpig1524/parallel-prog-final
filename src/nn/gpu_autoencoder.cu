@@ -5,7 +5,7 @@
 #include <iostream>
 #include <fstream>
 
-// ================= CUDA KERNELS (NAIVE & REDUCTION) =================
+// ======== CUDA KERNELS =========
 
 template<typename Func>
 void GPUAutoencoder::measureKernelTime(Func&& kernelFunc, float& timeVariable, const char* kernelName) {
@@ -62,8 +62,9 @@ __global__ void k_conv2d_forward(
             for (int kw = 0; kw < K; ++kw) {
                 int ih = oh * stride + kh - padding;
                 int iw = ow * stride + kw - padding;
-                ih = max(min(ih, H - 1), 0);
-                iw = max(min(iw, W - 1), 0);
+                if (ih < 0 || ih >= H || iw < 0 || iw >= W) {
+                    continue; 
+                }
                 // Tính flat index dựa vào batch, in_Channel, H và W
                 int in_idx = ((b * inC + ic) * H + ih) * W + iw;
                 int w_idx = ((oc * inC + ic) * K + kh) * K + kw;
@@ -103,8 +104,9 @@ __global__ void k_conv2d_forward_fuse(
             for (int kw = 0; kw < K; ++kw) {
                 int ih = oh * stride + kh - padding;
                 int iw = ow * stride + kw - padding;
-                ih = max(min(ih, H - 1), 0);
-                iw = max(min(iw, W - 1), 0);
+                if (ih < 0 || ih >= H || iw < 0 || iw >= W) {
+                    continue; 
+                }
                 // Tính flat index dựa vào batch, in_Channel, H và W
                 int in_idx = ((b * inC + ic) * H + ih) * W + iw;
                 int w_idx = ((oc * inC + ic) * K + kh) * K + kw;
@@ -150,8 +152,7 @@ __global__ void k_maxpool_forward(
         for (int kw = 0; kw < K; ++kw) {
             int hh = ih_start + kh;
             int ww = iw_start + kw;
-            hh = max(min(hh, inH - 1), 0);
-            ww = max(min(ww, inW - 1), 0);
+            if (hh >= inH || ww >= inW) continue;
 
             int idx = (bc * inH + hh) * inW + ww;
             float val = input[idx];
@@ -290,11 +291,9 @@ __global__ void k_conv2d_backward_input(float* d_output, float* weights, float* 
     for(int oc=0; oc<outC; ++oc) {
         for(int kh=0; kh<K; ++kh) {
             for(int kw=0; kw<K; ++kw) {
-                int oh_num = ih + padding - kh;
-                int ow_num = iw + padding - kw;
-                if (oh_num % stride == 0 && ow_num % stride == 0) {
-                    int oh = oh_num / stride;
-                    int ow = ow_num / stride;
+                int oh = ih + padding - kh;
+                int ow = iw + padding - kw;
+                if (oh % stride == 0 && ow % stride == 0) {
                     if (oh >= 0 && oh < H && ow >= 0 && ow < W) {
                         int w_idx = ((oc * inC + ic) * K + kh) * K + kw;
                         int dout_idx = ((b * outC + oc) * H + oh) * W + ow;
@@ -495,7 +494,7 @@ __global__ void k_conv2d_backward_weights_smem(float* input, float* d_output, fl
     int ow = blockIdx.x * blockDim.x + threadIdx.x;
     int oh = blockIdx.y * blockDim.y + threadIdx.y;
     int b_oc = blockIdx.z;
-    extern __shared__ float s_input[]; // Sử dụng shared memory nếu cần
+    extern __shared__ float s_input[]; 
     if (ow >= W || oh >= H) return;
     int oc = b_oc % outC;
     int b = b_oc / outC;
@@ -697,9 +696,6 @@ __global__ void k_conv2d_backward_bias_reduction(float* input, float* d_output, 
     extern __shared__ float sdata[];
     
     int oc = blockIdx.x;
-    // int ic = blockIdx.y;
-    // int kh = blockIdx.z / K;
-    // int kw = blockIdx.z % K;
 
     float sum = 0.0;
     int total_pixels = H * W * batchSize;
@@ -758,7 +754,7 @@ GPUAutoencoder::GPUAutoencoder(float learningRate, float momentum)
 }
 
 void random_init(std::vector<float>& vec, int fan_in) {
-    // Xavier/Glorot initialization for better stability
+    // Xavier/Glorot initialization 
     float limit = sqrt(2.0f / (fan_in + vec.size()));
     std::random_device rd;
     std::mt19937 generator(rd());
@@ -896,7 +892,7 @@ void GPUAutoencoder::forwardPass(int batchSize){
     measureKernelTime([&]() {
         k_conv2d_forward_fuse<<<grid, block>>>(d_input, d_w_enc_conv1, d_b_enc_conv1, d_enc_conv1, inC, outC, H_in, W_in, filterWidth, padding, stride);
     }, conv_forward_time, "Conv2D Forward");
-    // CHECK(cudaGetLastError());
+    CHECK(cudaGetLastError());
 
 
     inC = 256, outC = 256, filterWidth = 2;

@@ -10,7 +10,7 @@
 using namespace std;
 
 void random_init(vector<float>& vec, int fan_in) {
-    // Xavier/Glorot initialization for better stability
+    // Xavier/Glorot initialization
     float limit = sqrt(2.0 / (fan_in + vec.size()));
     std::random_device rd;
     std::mt19937 generator(rd());
@@ -57,20 +57,17 @@ void Autoencoder::train_sample(const std::vector<float>& imageFlat) {
 
     forwardPass();
 
-    // Tính loss cho sample này
     m_loss = 0.0;
     int size = a_output.data.size();
-    // Sử dụng MSE Loss
+    //  MSE Loss
     for(int i=0; i<size; i++) {
         float diff = a_output.data[i] - a_input.data[i];
         m_loss += diff * diff;
     }
     m_loss /= size;
 
-    // Backward sẽ CỘNG DỒN vào biến thành viên d_w_...
     d_output = Tensor(3, 32, 32);
     for(int i=0; i<size; i++) {
-        // Match GPU version: dL/dy = (2/N) * (target - predicted)
         float diff = a_input.data[i] - a_output.data[i]; // target - predicted
         d_output.data[i] = -(2.0f / size) * diff;
         avg_grad += fabs(d_output.data[i]);
@@ -80,7 +77,6 @@ void Autoencoder::train_sample(const std::vector<float>& imageFlat) {
 }
 
 
-// Hàm mới: Gọi hàm này sau khi chạy xong 1 batch (ví dụ 32 ảnh)
 void Autoencoder::update_weights(int batchSize) {
     if (batchSize <= 0) return;
 
@@ -102,21 +98,18 @@ void Autoencoder::update_weights(int batchSize) {
 
 void Autoencoder::apply_update(std::vector<float>& weights, std::vector<float>& d_weights, std::vector<float>& velocity, int batchSize) {
     for(size_t i=0; i<weights.size(); i++) {
-        // Chia gradient cho batch size để lấy trung bình
         float avg_grad = d_weights[i] / batchSize;
         
-        // Gradient clipping to prevent exploding gradients
+        // Gradient clipping
         const float grad_clip = 5.0;
         if (avg_grad > grad_clip) avg_grad = grad_clip;
         else if (avg_grad < -grad_clip) avg_grad = -grad_clip;
         
-        // SGD with Momentum
         float v = m_momentum * velocity[i] - m_learningRate * avg_grad;
         velocity[i] = v;
         weights[i] += v;
         
         
-        // Quan trọng: Reset gradient về 0 sau khi update để dùng cho batch sau
         d_weights[i] = 0.0;
     }
 }
@@ -130,108 +123,79 @@ std::vector<float> Autoencoder::getOutput(const std::vector<float>& imageFlat) {
 
 
 void Autoencoder::forwardPass() {
-    // ... (Code forwardPass giữ nguyên như cũ) ...
-    // Copy lại nội dung forwardPass từ phiên bản trước
     
-    // 1. Conv1 + ReLU
+    // --- ENCODER ---
     a_enc_conv1 = Tensor(256, 32, 32);
     conv2d_forward(a_input, w_enc_conv1, b_enc_conv1, a_enc_conv1);
     relu_forward(a_enc_conv1);
 
-    // 2. MaxPool1
     a_enc_pool1 = Tensor(256, 16, 16);
     maxpool2d_forward(a_enc_conv1, a_enc_pool1);
 
-    // 3. Conv2 + ReLU
     a_enc_conv2 = Tensor(128, 16, 16);
     conv2d_forward(a_enc_pool1, w_enc_conv2, b_enc_conv2, a_enc_conv2);
     relu_forward(a_enc_conv2);
 
-    // 4. MaxPool2 -> LATENT
     a_latent = Tensor(128, 8, 8);
     maxpool2d_forward(a_enc_conv2, a_latent);
 
     // --- DECODER ---
-    // 5. Conv3 + ReLU
     a_dec_conv3 = Tensor(128, 8, 8);
     conv2d_forward(a_latent, w_dec_conv3, b_dec_conv3, a_dec_conv3);
     relu_forward(a_dec_conv3);
 
-    // 6. UpSample1
     a_dec_ups1 = Tensor(128, 16, 16);
     upsample2d_forward(a_dec_conv3, a_dec_ups1);
 
-    // 7. Conv4 + ReLU
     a_dec_conv4 = Tensor(256, 16, 16);
     conv2d_forward(a_dec_ups1, w_dec_conv4, b_dec_conv4, a_dec_conv4);
     relu_forward(a_dec_conv4);
 
-    // 8. UpSample2
     a_dec_ups2 = Tensor(256, 32, 32);
     upsample2d_forward(a_dec_conv4, a_dec_ups2);
 
-    // 9. Conv5 (Output)
     a_output = Tensor(3, 32, 32);
     conv2d_forward(a_dec_ups2, w_dec_conv5, b_dec_conv5, a_output);
 }
 
 void Autoencoder::backwardPass() {
-
-
-    // --- BACKWARD DECODER ---
-    // Lưu ý: d_w_dec... và d_b_dec... là biến thành viên, nên hàm conv2d_backward sẽ CỘNG DỒN (+=) vào nó
-    
-    // 1. Back Conv5
+    //--- BACKWARD DECODER ---
     Tensor d_dec_ups2(256, 32, 32);
     conv2d_backward(a_dec_ups2, d_output, w_dec_conv5, d_dec_ups2, d_w_dec_conv5, d_b_dec_conv5);
 
-    // 2. Back UpSample2
     Tensor d_dec_conv4(256, 16, 16);
     upsample2d_backward(d_dec_ups2, d_dec_conv4);
 
-    // 3. Back ReLU + Conv4
     relu_backward(a_dec_conv4, d_dec_conv4);
     Tensor d_dec_ups1(128, 16, 16);
     conv2d_backward(a_dec_ups1, d_dec_conv4, w_dec_conv4, d_dec_ups1, d_w_dec_conv4, d_b_dec_conv4);
 
-    // 4. Back UpSample1
     Tensor d_dec_conv3(128, 8, 8);
     upsample2d_backward(d_dec_ups1, d_dec_conv3);
 
-    // 5. Back ReLU + Conv3
     relu_backward(a_dec_conv3, d_dec_conv3);
     Tensor d_latent(128, 8, 8);
     conv2d_backward(a_latent, d_dec_conv3, w_dec_conv3, d_latent, d_w_dec_conv3, d_b_dec_conv3);
 
     // --- BACKWARD ENCODER ---
-    // 6. Back MaxPool2
     Tensor d_enc_conv2(128, 16, 16);
     maxpool2d_backward(a_enc_conv2, a_latent, d_latent, d_enc_conv2);
 
-    // 7. Back ReLU + Conv2
     relu_backward(a_enc_conv2, d_enc_conv2);
     Tensor d_enc_pool1(256, 16, 16);
     conv2d_backward(a_enc_pool1, d_enc_conv2, w_enc_conv2, d_enc_pool1, d_w_enc_conv2, d_b_enc_conv2);
 
-    // 8. Back MaxPool1
     Tensor d_enc_conv1(256, 32, 32);
     maxpool2d_backward(a_enc_conv1, a_enc_pool1, d_enc_pool1, d_enc_conv1);
 
-    // 9. Back ReLU + Conv1
     relu_backward(a_enc_conv1, d_enc_conv1);
     Tensor d_dummy_input(3, 32, 32);
     conv2d_backward(a_input, d_enc_conv1, w_enc_conv1, d_dummy_input, d_w_enc_conv1, d_b_enc_conv1);
 }
 
-// ... (Các hàm helper conv2d_forward, conv2d_backward... giữ nguyên logic như phiên bản trước) ...
-// Để code gọn, tôi không paste lại toàn bộ nội dung helper functions nếu chúng không đổi logic.
-// Tuy nhiên, logic conv2d_backward đã được viết để dùng += (accumulate), nên nó tương thích hoàn toàn.
-// Chỉ cần đảm bảo hàm gọi d_input.zero() ở đầu hàm backward như phiên bản trước là đúng.
 
 void Autoencoder::conv2d_forward(const Tensor& input, const std::vector<float>& weights, const std::vector<float>& bias, Tensor& output, int stride, int padding) {
     int K = 3;
-    // ... Logic forward giữ nguyên ...
-    // Để đảm bảo file chạy được, tôi chép lại đoạn code quan trọng
     
     #pragma omp parallel for 
     for(int oc = 0; oc < output.c; oc++) {
@@ -297,7 +261,6 @@ void Autoencoder::upsample2d_forward(const Tensor& input, Tensor& output) {
 void Autoencoder::conv2d_backward(const Tensor& input, const Tensor& d_output, const std::vector<float>& weights, Tensor& d_input, std::vector<float>& d_weights, std::vector<float>& d_bias, int stride, int padding) {
     int K = 3;
     d_input.zero(); 
-    // Logic backward tích lũy (+=)
     for(int oc = 0; oc < d_output.c; oc++) {
         float sum_bias = 0.0;
         for(int oh = 0; oh < d_output.h; oh++) {
@@ -310,9 +273,9 @@ void Autoencoder::conv2d_backward(const Tensor& input, const Tensor& d_output, c
                             int ih = oh * stride + kh - padding;
                             int iw = ow * stride + kw - padding;
                             if (ih >= 0 && ih < input.h && iw >= 0 && iw < input.w) {
-                                // Tích lũy gradient weights
+                                // accumulate gradient weights
                                 d_weights[W_IDX(oc, ic, kh, kw, input.c, K)] += input.at(ic, ih, iw) * d_val;
-                                // Tích lũy gradient input
+                                // accumulate gradient input
                                 d_input.at(ic, ih, iw) += weights[W_IDX(oc, ic, kh, kw, input.c, K)] * d_val;
                             }
                         }
@@ -320,7 +283,7 @@ void Autoencoder::conv2d_backward(const Tensor& input, const Tensor& d_output, c
                 }
             }
         }
-        // Tích lũy gradient bias
+        // accumulate gradient bias
         d_bias[oc] += sum_bias;
     }
 }
@@ -375,7 +338,6 @@ void Autoencoder::save_weights(const std::string& filepath) {
         return;
     }
 
-    // Save raw data without size metadata (compatible with GPU version)
     auto save_layer = [&](const vector<float>& weights, const vector<float>& bias) {
         file.write(reinterpret_cast<const char*>(weights.data()), weights.size() * sizeof(float));
         file.write(reinterpret_cast<const char*>(bias.data()), bias.size() * sizeof(float));
@@ -398,7 +360,6 @@ void Autoencoder::load_weights(const std::string& filepath) {
         return;
     }
 
-    // Load raw data without size metadata (compatible with GPU version)
     auto load_layer = [&](vector<float>& weights, vector<float>& bias, int outC, int inC, int K) {
         int w_size = outC * inC * K * K;
         int b_size = outC;

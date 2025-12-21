@@ -7,9 +7,7 @@
 #include <string>
 #include <algorithm>
 #include <iomanip>
-// #include <cuda_runtime.h>
 
-// Hàm đọc một file binary CIFAR-10 và trả về vector<pair<label, image_pixels>>
 std::vector<std::pair<int, std::vector<float>>> readBinaryFile(const std::string& filepath) {
     std::ifstream file(filepath, std::ios::binary);
     if (!file.is_open()) {
@@ -17,8 +15,8 @@ std::vector<std::pair<int, std::vector<float>>> readBinaryFile(const std::string
     }
 
     // CIFAR-10 format: mỗi image = 1 byte label + 3072 bytes pixel data
-    const int IMAGE_SIZE = 3072; // 32 * 32 * 3 (RGB)
-    const int RECORD_SIZE = 1 + IMAGE_SIZE; // 1 byte label + 3072 bytes pixels
+    const int IMAGE_SIZE = 3072; 
+    const int RECORD_SIZE = 1 + IMAGE_SIZE;     
     
     // Tính số lượng images trong file
     file.seekg(0, std::ios::end);
@@ -34,11 +32,9 @@ std::vector<std::pair<int, std::vector<float>>> readBinaryFile(const std::string
     imageData.reserve(numImages);
     
     for (int i = 0; i < numImages; i++) {
-        // Đọc label (1 byte)
         unsigned char label;
         file.read(reinterpret_cast<char*>(&label), 1);
         
-        // Đọc pixel data (3072 bytes)
         std::vector<unsigned char> pixelBytes(IMAGE_SIZE);
         file.read(reinterpret_cast<char*>(pixelBytes.data()), IMAGE_SIZE);
         
@@ -60,7 +56,6 @@ std::vector<std::pair<int, std::vector<float>>> readBinaryFile(const std::string
     return imageData;
 }
 
-// Hàm đọc tất cả file .bin trong folder và load vào train_data
 std::vector<std::vector<float>> loadData(const std::string& folderPath, const std::string& type="train") {
     std::vector<std::vector<float>> train_data;
     printf("== Loading %s data...\n", type.c_str());
@@ -81,13 +76,12 @@ std::vector<std::vector<float>> loadData(const std::string& folderPath, const st
 
         for (const auto& filepath : allFiles) {
             std::string filename = std::filesystem::path(filepath).filename().string();
-            if (type == "train" && filename.find("data_batch_1") != std::string::npos) {
+            if (type == "train" && filename.find("data") != std::string::npos) {
                 binFiles.push_back(filepath);
             } else if (type == "test" && filename.find("test_batch") != std::string::npos) {
                 binFiles.push_back(filepath);
             }
         }
-        // Sắp xếp file theo tên để đảm bảo thứ tự
         std::sort(binFiles.begin(), binFiles.end());
         
         std::cout << "Found " << binFiles.size() << " binary files" << std::endl;
@@ -153,8 +147,8 @@ int main() {
     }
     
     // Training parameters
-    int EPOCHS = 1;
-    int BATCH_SIZE = 32; // Reduced for GPU memory
+    int EPOCHS = 10;
+    int BATCH_SIZE = 64; // Reduced for GPU memory
     float LR = 0.001;
     float MOMENTUM = 0.9;
     
@@ -270,14 +264,14 @@ int main() {
 
         // Calculate epoch statistics
         float avg_epoch_loss = epoch_loss / processed_batches; 
-        // float avg_test_loss = test_loss / total_test_batches;
+        float avg_test_loss = test_loss / total_test_batches;
         
         std::cout << "\n--- Epoch " << (epoch + 1) << " Summary ---" << std::endl;
         std::cout << "Batches processed: " << processed_batches << std::endl;
         std::cout << "Average train loss: " << std::fixed << std::setprecision(6) << avg_epoch_loss << std::endl;
-        // std::cout << "Average test loss: " << std::fixed << std::setprecision(6) << avg_test_loss << std::endl;
+        std::cout << "Average test loss: " << std::fixed << std::setprecision(6) << avg_test_loss << std::endl;
         std::cout << "Epoch train time: " << std::fixed << std::setprecision(2) << (train_milliseconds / 1000.0f) << " seconds" << std::endl;
-        // std::cout << "Inference time: " << std::fixed << std::setprecision(2) << (test_milliseconds / 1000.0f) << " seconds" << std::endl;
+        std::cout << "Inference time: " << std::fixed << std::setprecision(2) << (test_milliseconds / 1000.0f) << " seconds" << std::endl;
 
 
     }

@@ -51,7 +51,6 @@ private:
     std::vector<float> w_dec_conv5, b_dec_conv5;
 
     // --- GRADIENT ACCUMULATORS (Tích lũy qua batch) ---
-    // Được chuyển từ biến cục bộ thành biến thành viên
     std::vector<float> d_w_enc_conv1, d_b_enc_conv1;
     std::vector<float> d_w_enc_conv2, d_b_enc_conv2;
     std::vector<float> d_w_dec_conv3, d_b_dec_conv3;

@@ -1,8 +1,8 @@
 #ifndef EXTRACT_FEATURES_H
 #define EXTRACT_FEATURES_H
 
-#include "dataset.cpp"
-#include "nn/gpu_autoencoder.h"
+#include "dataset.h"
+#include "nn/autoencoder.h"
 
 void extractLatentFeatures(const char* dataPath, const char* modelPath, const char* outputPath);
 
